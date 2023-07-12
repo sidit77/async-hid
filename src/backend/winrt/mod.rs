@@ -1,11 +1,48 @@
+use std::future::ready;
+use futures_util::stream::FuturesUnordered;
+use futures_util::StreamExt;
+use windows::core::HSTRING;
+use windows::Devices::Enumeration::DeviceInformation;
+use windows::Devices::HumanInterfaceDevice::HidDevice;
+use windows::h;
+use windows::Storage::FileAccessMode;
 use crate::DeviceInfo;
 use crate::error::{ErrorSource, HidResult};
 
+const DEVICE_SELECTOR: &HSTRING = h!(r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#);
+
 pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
-    Ok(Vec::new())
+    let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
+        .await?
+        .into_iter()
+        .map(get_device_information)
+        .collect::<FuturesUnordered<_>>()
+        .filter_map(|info| ready(info.ok()))
+        .collect()
+        .await;
+    Ok(devices)
 }
 
+async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo> {
+    let id = device.Id()?;
+    let name = device.Name()?;
+    let device = HidDevice::FromIdAsync(&device.Id()?, FileAccessMode::Read)?.await?;
+    Ok(DeviceInfo {
+        id: id.into(),
+        name: name.to_string_lossy(),
+        product_id: device.ProductId()?,
+        vendor_id: device.VendorId()?,
+        usage_id: device.UsageId()?,
+        usage_page: device.UsagePage()?,
+    })
+}
 
+pub async fn open(id: &BackendDeviceId) -> HidResult<BackendDevice> {
+    todo!()
+}
+
+pub type BackendDevice = HidDevice;
+pub type BackendDeviceId = HSTRING;
 pub type BackendError = windows::core::Error;
 
 impl From<BackendError> for ErrorSource {

@@ -3,4 +3,4 @@
 #[path = "winrt/mod.rs"]
 mod backend;
 
-pub use backend::{BackendError, enumerate};
+pub use backend::{BackendError, BackendDeviceId, BackendDevice, enumerate, open};
