@@ -7,8 +7,6 @@ edition = "2021"
 
 [dependencies]
 backtrace = "0.3"
-#udev = "0.7"
-#nix = "0.26"
 
 [target."cfg(target_os = \"windows\")".dependencies]
 futures-util = "0.3"
@@ -21,6 +19,10 @@ windows = { version = "0.48", features = [
     "Storage",
     "Storage_Streams"
 ]}
+
+[target."cfg(target_os = \"linux\")".dependencies]
+udev = "0.7"
+#nix = "0.26"
 
 [dev-dependencies]
 pollster = { version = "0.3", features = ["macro"] }

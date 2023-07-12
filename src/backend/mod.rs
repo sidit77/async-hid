@@ -3,4 +3,8 @@
 #[path = "winrt/mod.rs"]
 mod backend;
 
+#[cfg(target_os = "linux")]
+#[path = "hidraw/mod.rs"]
+mod backend;
+
 pub use backend::{BackendError, BackendDeviceId, BackendDevice, enumerate, open};

@@ -5,12 +5,11 @@ use crate::backend::BackendError;
 
 pub type HidResult<T> = Result<T, HidError>;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum ErrorSource {
     PlatformSpecific(BackendError)
 }
 
-#[derive(Clone)]
 pub struct HidError {
     backtrace: Backtrace,
     source: ErrorSource
