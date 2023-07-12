@@ -1,11 +1,14 @@
 use std::future::ready;
+use flume::{Receiver, TrySendError};
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
 use windows::core::HSTRING;
 use windows::Devices::Enumeration::DeviceInformation;
-use windows::Devices::HumanInterfaceDevice::HidDevice;
+use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
+use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
 use windows::h;
 use windows::Storage::FileAccessMode;
+use windows::Storage::Streams::DataReader;
 use crate::DeviceInfo;
 use crate::error::{ErrorSource, HidResult};
 
@@ -37,11 +40,53 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceIn
     })
 }
 
-pub async fn open(id: &BackendDeviceId) -> HidResult<BackendDevice> {
-    todo!()
+#[derive(Debug, Clone)]
+pub struct BackendDevice {
+    device: HidDevice,
+    input: Receiver<HidInputReport>,
+    token: EventRegistrationToken
 }
 
-pub type BackendDevice = HidDevice;
+impl Drop for BackendDevice {
+    fn drop(&mut self) {
+        self.device.RemoveInputReportReceived(self.token).unwrap();
+    }
+}
+
+impl BackendDevice {
+
+    pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+        let report = self.input.recv_async().await.unwrap();
+        let buffer = report.Data()?;
+        let size = buf.len().min(buffer.Length()? as usize);
+        let reader = DataReader::FromBuffer(&buffer)?;
+        reader.ReadBytes(&mut buf[..size])?;
+        Ok(size)
+    }
+
+}
+
+pub async fn open(id: &BackendDeviceId) -> HidResult<BackendDevice> {
+    let device = HidDevice::FromIdAsync(id, FileAccessMode::ReadWrite)?.await?;
+    let (sender, receiver) = flume::bounded(64);
+    let drain = receiver.clone();
+    let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: &Option<HidInputReportReceivedEventArgs>| {
+        if let Some(args) = args {
+            let mut msg = args.Report()?;
+            while let Err(TrySendError::Full(ret)) = sender.try_send(msg) {
+                let _ = drain.try_recv();
+                msg = ret;
+            }
+        }
+        Ok(())
+    }))?;
+    Ok(BackendDevice {
+        device,
+        input: receiver,
+        token,
+    })
+}
+
 pub type BackendDeviceId = HSTRING;
 pub type BackendError = windows::core::Error;
 
