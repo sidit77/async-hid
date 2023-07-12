@@ -6,3 +6,20 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+backtrace = "0.3"
+#udev = "0.7"
+#nix = "0.26"
+
+[target."cfg(target_os = \"windows\")".dependencies]
+flume = "0.10"
+windows = { version = "0.48", features = [
+    "Devices_Enumeration",
+    "Devices_HumanInterfaceDevice",
+    "Foundation",
+    "Foundation_Collections",
+    "Storage",
+    "Storage_Streams"
+]}
+
+[dev-dependencies]
+pollster = { version = "0.3", features = ["macro"] }

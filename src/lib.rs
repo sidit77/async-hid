@@ -1,14 +1,18 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
+mod backend;
+mod error;
+
+pub use error::{HidError, HidResult, ErrorSource};
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct DeviceInfo {
+
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl DeviceInfo {
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
+        backend::enumerate().await
     }
+
 }
+
