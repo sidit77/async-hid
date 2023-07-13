@@ -2,10 +2,10 @@ mod backend;
 mod error;
 
 use std::fmt::{Debug, Formatter};
-pub use error::{HidError, HidResult, ErrorSource};
 
 use crate::backend::{BackendDevice, BackendDeviceId};
 
+pub use error::{HidError, HidResult, ErrorSource};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DeviceInfo {
