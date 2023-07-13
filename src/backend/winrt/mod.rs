@@ -2,13 +2,13 @@ use std::future::ready;
 use flume::{Receiver, TrySendError};
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
-use windows::core::HSTRING;
+use windows::core::{ComInterface, HSTRING};
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
 use windows::h;
 use windows::Storage::FileAccessMode;
-use windows::Storage::Streams::DataReader;
+use windows::Storage::Streams::IBuffer;
 use crate::DeviceInfo;
 use crate::error::{ErrorSource, HidResult};
 
@@ -57,11 +57,34 @@ impl BackendDevice {
 
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
         let report = self.input.recv_async().await.unwrap();
+        //let buffer = report.Data()?;
+        //let size = buf.len().min(buffer.Length()? as usize);
+        //let reader = DataReader::FromBuffer(&buffer)?;
+        //reader.ReadBytes(&mut buf[..size])?;
         let buffer = report.Data()?;
-        let size = buf.len().min(buffer.Length()? as usize);
-        let reader = DataReader::FromBuffer(&buffer)?;
-        reader.ReadBytes(&mut buf[..size])?;
+        let buffer = to_slice(&buffer)?;
+        let size = buf.len().min(buffer.len());
+        buf[..size].copy_from_slice(&buffer[..size]);
         Ok(size)
+    }
+
+    pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
+        let report = self.device.CreateOutputReport()?;
+        let mut buffer = report.Data()?;
+        //TODO maybe don't panic if buf is to large
+        let (buffer, remainder) = to_slice_mut(&mut buffer)?
+            .split_at_mut(buf.len());
+        buffer.copy_from_slice(&buf);
+        remainder.fill(0);
+        //let len = report.Data()?.Length()?;
+        //let writer = DataWriter::new()?;
+        //writer.WriteBytes(&buf)?;
+        //for _ in 0..(len.checked_sub(buf.len() as u32).unwrap_or(0)) {
+        //    writer.WriteByte(0)?;
+        //}
+        //report.SetData(&writer.DetachBuffer()?)?;
+        self.device.SendOutputReportAsync(&report)?.await?;
+        Ok(())
     }
 
 }
@@ -94,6 +117,18 @@ impl From<BackendError> for ErrorSource {
     fn from(value: BackendError) -> Self {
         ErrorSource::PlatformSpecific(value)
     }
+}
+
+fn to_slice(buffer: &IBuffer) -> HidResult<&[u8]> {
+    use windows::Win32::System::WinRT::IBufferByteAccess;
+    let bytes: IBufferByteAccess = buffer.cast()?;
+    Ok(unsafe { std::slice::from_raw_parts(bytes.Buffer()?, buffer.Length()? as usize)})
+}
+
+fn to_slice_mut(buffer: &mut IBuffer) -> HidResult<&mut [u8]> {
+    use windows::Win32::System::WinRT::IBufferByteAccess;
+    let bytes: IBufferByteAccess = buffer.cast()?;
+    Ok(unsafe { std::slice::from_raw_parts_mut(bytes.Buffer()?, buffer.Length()? as usize)})
 }
 
 

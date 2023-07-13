@@ -49,7 +49,9 @@ impl Device {
         self.inner.read_input_report(buf).await
     }
 
-
+    pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
+        self.inner.write_output_report(buf).await
+    }
 
 }
 
