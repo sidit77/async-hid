@@ -1,10 +1,9 @@
-
 #[cfg(target_os = "windows")]
 mod winrt;
 #[cfg(target_os = "windows")]
-pub use winrt::{BackendError, BackendDeviceId, BackendDevice, enumerate, open};
+pub use winrt::{enumerate, open, BackendDevice, BackendDeviceId, BackendError};
 
 #[cfg(target_os = "linux")]
 mod hidraw;
 #[cfg(target_os = "linux")]
-pub use hidraw::{BackendError, BackendDeviceId, BackendDevice, enumerate, open};
+pub use hidraw::{enumerate, open, BackendDevice, BackendDeviceId, BackendError};

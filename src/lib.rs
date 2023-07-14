@@ -3,9 +3,9 @@ mod error;
 
 use std::fmt::{Debug, Formatter};
 
-use crate::backend::{BackendDevice, BackendDeviceId};
+pub use error::{ErrorSource, HidError, HidResult};
 
-pub use error::{HidError, HidResult, ErrorSource};
+use crate::backend::{BackendDevice, BackendDeviceId};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DeviceInfo {
@@ -18,7 +18,6 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-
     pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
         backend::enumerate().await
     }
@@ -27,14 +26,13 @@ impl DeviceInfo {
         let dev = backend::open(&self.id.0).await?;
         Ok(Device {
             inner: dev,
-            info: self.clone(),
+            info: self.clone()
         })
     }
 
     pub fn matches(&self, usage_page: u16, usage_id: u16, vendor_id: u16, product_id: u16) -> bool {
         self.usage_page == usage_page && self.usage_id == usage_id && self.vendor_id == vendor_id && self.product_id == product_id
     }
-
 }
 
 pub struct Device {
@@ -44,7 +42,6 @@ pub struct Device {
 }
 
 impl Device {
-
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
         self.inner.read_input_report(buf).await
     }
@@ -52,9 +49,7 @@ impl Device {
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
         self.inner.write_output_report(buf).await
     }
-
 }
-
 
 #[derive(Clone, Eq, PartialEq)]
 #[repr(transparent)]

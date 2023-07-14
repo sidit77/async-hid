@@ -1,11 +1,14 @@
 use std::path::PathBuf;
+
 use udev::{Device, Enumerator};
+
 use crate::{DeviceInfo, ErrorSource, HidResult};
 
 pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
     let mut enumerator = Enumerator::new()?;
     enumerator.match_subsystem("hidraw")?;
-    let devices = enumerator.scan_devices()?
+    let devices = enumerator
+        .scan_devices()?
         .filter_map(|dev| get_device_info(&dev))
         .flatten()
         .collect();
@@ -13,9 +16,7 @@ pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
 }
 
 fn get_device_info(raw_device: &Device) -> Option<Vec<DeviceInfo>> {
-    let device = raw_device.parent_with_subsystem("hid")
-        .unwrap()
-        .unwrap();
+    let device = raw_device.parent_with_subsystem("hid").unwrap().unwrap();
 
     let (_bus, vendor_id, product_id) = device
         .property_value("HID_ID")
@@ -23,10 +24,7 @@ fn get_device_info(raw_device: &Device) -> Option<Vec<DeviceInfo>> {
         .and_then(parse_hid_vid_pid)
         .unwrap();
 
-    let id = raw_device
-        .devnode()
-        .unwrap()
-        .to_path_buf();
+    let id = raw_device.devnode().unwrap().to_path_buf();
 
     let name = device
         .property_value("HID_NAME")
@@ -40,7 +38,7 @@ fn get_device_info(raw_device: &Device) -> Option<Vec<DeviceInfo>> {
         product_id,
         vendor_id,
         usage_id: 0,
-        usage_page: 0,
+        usage_page: 0
     }])
 }
 
@@ -57,11 +55,9 @@ fn parse_hid_vid_pid(s: &str) -> Option<(u16, u16, u16)> {
 pub struct BackendDevice;
 
 impl BackendDevice {
-
     pub async fn read_input_report(&self, _buf: &mut [u8]) -> HidResult<usize> {
         Ok(0)
     }
-
 }
 
 pub async fn open(_id: &BackendDeviceId) -> HidResult<BackendDevice> {
