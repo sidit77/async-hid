@@ -8,12 +8,25 @@ pub type HidResult<T> = Result<T, HidError>;
 
 #[derive(Debug)]
 pub enum ErrorSource {
-    PlatformSpecific(BackendError)
+    PlatformSpecific(BackendError),
+    Custom(&'static str)
 }
 
 pub struct HidError {
     location: &'static Location<'static>,
     source: ErrorSource
+}
+
+impl HidError {
+
+    #[track_caller]
+    pub fn custom(msg: &'static str) -> Self {
+        Self {
+            location: Location::caller(),
+            source: ErrorSource::Custom(msg),
+        }
+    }
+
 }
 
 impl Debug for HidError {
