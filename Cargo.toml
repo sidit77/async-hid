@@ -10,10 +10,9 @@ default = ["direct-buffer-access"]
 direct-buffer-access = ["windows/Win32_System_WinRT"]
 
 [dependencies]
-backtrace = "0.3"
 
 [target."cfg(target_os = \"windows\")".dependencies]
-futures-util = "0.3"
+futures-lite = "1"
 flume = "0.10"
 windows = { version = "0.48", features = [
     "Devices_Enumeration",

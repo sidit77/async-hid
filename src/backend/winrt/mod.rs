@@ -1,8 +1,7 @@
-use std::future::ready;
 
 use flume::{Receiver, TrySendError};
-use futures_util::stream::FuturesUnordered;
-use futures_util::StreamExt;
+use futures_lite::stream::iter;
+use futures_lite::StreamExt;
 use windows::core::HSTRING;
 use windows::h;
 use windows::Devices::Enumeration::DeviceInformation;
@@ -18,12 +17,20 @@ const DEVICE_SELECTOR: &HSTRING = h!(
 );
 
 pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
-    let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
+    //let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
+    //    .await?
+    //    .into_iter()
+    //    .map(get_device_information)
+    //    .collect::<FuturesUnordered<_>>()
+    //    .filter_map(|info| ready(info.ok()))
+    //    .collect()
+    //    .await;
+    let devices = iter(
+        DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
         .await?
-        .into_iter()
-        .map(get_device_information)
-        .collect::<FuturesUnordered<_>>()
-        .filter_map(|info| ready(info.ok()))
+        .into_iter())
+        .then(get_device_information)
+        .filter_map(Result::ok)
         .collect()
         .await;
     Ok(devices)
