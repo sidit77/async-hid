@@ -1,6 +1,7 @@
 mod descriptor;
 
 use std::path::PathBuf;
+use tokio::task::spawn_blocking;
 
 use udev::{Device, Enumerator};
 
@@ -8,17 +9,25 @@ use crate::{DeviceInfo, ErrorSource, HidError, HidResult};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
 
 pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
+    spawn_blocking(enumerate_sync)
+        .await
+        .map_err( |_| HidError::custom("Background task failed"))?
+}
+
+fn enumerate_sync() -> HidResult<Vec<DeviceInfo>> {
     let mut enumerator = Enumerator::new()?;
     enumerator.match_subsystem("hidraw")?;
     let devices = enumerator
         .scan_devices()?
-        .filter_map(|dev| get_device_info(&dev).ok())
+        .map(get_device_info)
+        .filter_map(Result::ok)
         .flatten()
         .collect();
     Ok(devices)
 }
 
-fn get_device_info(raw_device: &Device) -> HidResult<Vec<DeviceInfo>> {
+
+fn get_device_info(raw_device: Device) -> HidResult<Vec<DeviceInfo>> {
     let device = raw_device
         .parent_with_subsystem("hid")?
         .ok_or(HidError::custom("Can't find hid interface"))?;

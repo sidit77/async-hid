@@ -24,8 +24,10 @@ windows = { version = "0.48", features = [
 ]}
 
 [target."cfg(target_os = \"linux\")".dependencies]
+tokio = { version = "1", features = ["net", "rt"] }
 udev = "0.7"
 #nix = "0.26"
 
 [dev-dependencies]
-pollster = { version = "0.3", features = ["macro"] }
+#pollster = { version = "0.3", features = ["macro"] }
+tokio = { version = "1", features = ["full"] }

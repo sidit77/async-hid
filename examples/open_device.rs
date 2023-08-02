@@ -1,6 +1,6 @@
 use async_hid::{DeviceInfo, HidResult};
 
-#[pollster::main]
+#[tokio::main]
 async fn main() -> HidResult<()> {
     let device = DeviceInfo::enumerate()
         .await?
