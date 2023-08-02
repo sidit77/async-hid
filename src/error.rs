@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::panic::Location;
@@ -9,7 +10,7 @@ pub type HidResult<T> = Result<T, HidError>;
 #[derive(Debug)]
 pub enum ErrorSource {
     PlatformSpecific(BackendError),
-    Custom(&'static str)
+    Custom(Cow<'static, str>)
 }
 
 pub struct HidError {
@@ -20,10 +21,10 @@ pub struct HidError {
 impl HidError {
 
     #[track_caller]
-    pub fn custom(msg: &'static str) -> Self {
+    pub fn custom(msg: impl Into<Cow<'static, str>>) -> Self {
         Self {
             location: Location::caller(),
-            source: ErrorSource::Custom(msg),
+            source: ErrorSource::Custom(msg.into()),
         }
     }
 
