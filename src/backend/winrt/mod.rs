@@ -70,9 +70,13 @@ impl BackendDevice {
         let size = {
             let buffer = report.Data()?;
             let buffer = to_slice(&buffer)?;
+            assert!(!buffer.is_empty());
             let size = buf.len().min(buffer.len());
-            buf[..size].copy_from_slice(&buffer[..size]);
-            size
+            let start = (buffer[0] == 0x0)
+                .then_some(1)
+                .unwrap_or(0);
+            buf[..(size - start)].copy_from_slice(&buffer[start..size]);
+            size - start
         };
 
         #[cfg(not(feature = "direct-buffer-access"))]
