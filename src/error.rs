@@ -10,6 +10,7 @@ pub type HidResult<T> = Result<T, HidError>;
 #[derive(Debug)]
 pub enum ErrorSource {
     PlatformSpecific(BackendError),
+    InvalidZeroSizeData,
     Custom(Cow<'static, str>)
 }
 
@@ -25,6 +26,14 @@ impl HidError {
         Self {
             location: Location::caller(),
             source: ErrorSource::Custom(msg.into()),
+        }
+    }
+
+    #[track_caller]
+    pub fn zero_sized_data() -> Self {
+        Self {
+            location: Location::caller(),
+            source: ErrorSource::InvalidZeroSizeData,
         }
     }
 
@@ -53,4 +62,13 @@ impl<T: Into<ErrorSource>> From<T> for HidError {
             source: value.into()
         }
     }
+}
+
+#[macro_export]
+macro_rules! ensure {
+    ($cond:expr, $result:expr) => {
+        if !($cond) {
+            return Err($result);
+        }
+    };
 }

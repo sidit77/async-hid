@@ -5,15 +5,15 @@ use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use nix::errno::Errno;
 use nix::fcntl::OFlag;
-use nix::poll::{poll, PollFd, PollFlags};
-use nix::unistd::read;
+use nix::unistd::{read, write};
+use tokio::io::Interest;
+use tokio::io::unix::AsyncFd;
 use tokio::task::spawn_blocking;
 
 use udev::{Device, Enumerator};
 
-use crate::{DeviceInfo, ErrorSource, HidError, HidResult};
+use crate::{DeviceInfo, ensure, ErrorSource, HidError, HidResult};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
 use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
 
@@ -92,34 +92,31 @@ fn parse_hid_vid_pid(s: &str) -> Option<(u16, u16, u16)> {
 
 #[derive(Debug)]
 pub struct BackendDevice {
-    fd: OwnedFd
+    fd: AsyncFd<OwnedFd>
 }
 
 impl BackendDevice {
+
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        let pollfd = PollFd::new(self.fd.as_raw_fd(), PollFlags::POLLIN);
-        let res = poll(&mut [pollfd], -1)
-            .map_err(|e| HidError::custom(format!("Errno: {e}")))?;
-
-        if res == 0 {
-            return Ok(0);
-        }
-
-        let events = pollfd
-            .revents()
-            .map(|e| e.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL));
-
-        if events.is_none() || events == Some(true) {
-            return Err(HidError::custom("unexpected poll error (device disconnected)"));
-        }
-
-        match read(self.fd.as_raw_fd(), buf) {
-            Ok(w) => Ok(w),
-            Err(Errno::EAGAIN) | Err(Errno::EINPROGRESS) => Ok(0),
-            Err(e) => Err(HidError::custom(format!("Errno: {e}"))),
-        }
+        self
+            .fd
+            .async_io(Interest::READABLE, |fd| read(fd.as_raw_fd(), buf)
+                .map_err(BackendError::from))
+            .await
+            .map_err(HidError::from)
     }
-    pub async fn write_output_report(&self, _buf: &[u8]) -> HidResult<()> { Ok(()) }
+
+    pub async fn write_output_report(&self, data: &[u8]) -> HidResult<()> {
+        ensure!(!data.is_empty(), HidError::zero_sized_data());
+        self
+            .fd
+            .async_io(Interest::WRITABLE, |fd| write(fd.as_raw_fd(), data)
+                .map_err(BackendError::from))
+            .await
+            .map_err(HidError::from)
+            .map(|i| debug_assert_eq!(i, data.len()))
+    }
+
 }
 
 pub async fn open(id: &BackendDeviceId) -> HidResult<BackendDevice> {
@@ -135,15 +132,8 @@ pub async fn open(id: &BackendDeviceId) -> HidResult<BackendDevice> {
     unsafe { hidraw_ioc_grdescsize(fd.as_raw_fd(), &mut size) }
         .map_err(|e| HidError::custom(format!("ioctl(GRDESCSIZE) error for {:?}, not a HIDRAW device?: {}", id, e)))?;
 
-    //let mut size = 0_i32;
-    //if let Err(e) = unsafe { hidraw_ioc_grdescsize(fd.as_raw_fd(), &mut size) } {
-    //    return Err(HidError::HidApiError {
-    //        message: format!("ioctl(GRDESCSIZE) error for {path}, not a HIDRAW device?: {e}"),
-    //    });
-    //}
-
     Ok(BackendDevice {
-        fd,
+        fd: AsyncFd::new(fd)?,
     })
 }
 
