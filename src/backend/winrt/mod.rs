@@ -1,3 +1,4 @@
+mod utils;
 
 use flume::{Receiver, TrySendError};
 use futures_lite::stream::iter;
@@ -8,6 +9,7 @@ use windows::Devices::Enumeration::DeviceInformation;
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
 use windows::Storage::FileAccessMode;
+use crate::backend::winrt::utils::IBufferExt;
 
 use crate::error::{ErrorSource, HidResult};
 use crate::DeviceInfo;
@@ -66,53 +68,27 @@ impl Drop for BackendDevice {
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
         let report = self.input.recv_async().await.unwrap();
-        #[cfg(feature = "direct-buffer-access")]
-        let size = {
-            let buffer = report.Data()?;
-            let buffer = to_slice(&buffer)?;
-            assert!(!buffer.is_empty());
-            let size = buf.len().min(buffer.len());
-            let start = (buffer[0] == 0x0)
-                .then_some(1)
-                .unwrap_or(0);
-            buf[..(size - start)].copy_from_slice(&buffer[start..size]);
-            size - start
-        };
+        let buffer = report.Data()?;
+        let buffer = buffer.as_slice()?;
+        assert!(!buffer.is_empty());
+        let size = buf.len().min(buffer.len());
+        let start = (buffer[0] == 0x0)
+            .then_some(1)
+            .unwrap_or(0);
+        buf[..(size - start)].copy_from_slice(&buffer[start..size]);
 
-        #[cfg(not(feature = "direct-buffer-access"))]
-        let size = {
-            use windows::Storage::Streams::DataReader;
-            let buffer = report.Data()?;
-            let size = buf.len().min(buffer.Length()? as usize);
-            let reader = DataReader::FromBuffer(&buffer)?;
-            reader.ReadBytes(&mut buf[..size])?;
-            size
-        };
-        Ok(size)
+        Ok(size - start)
     }
 
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
         let report = self.device.CreateOutputReport()?;
-        #[cfg(feature = "direct-buffer-access")]
-        {
-            let mut buffer = report.Data()?;
-            //TODO maybe don't panic if buf is to large
-            let (buffer, remainder) = to_slice_mut(&mut buffer)?.split_at_mut(buf.len());
-            buffer.copy_from_slice(buf);
-            remainder.fill(0);
-        }
 
-        #[cfg(not(feature = "direct-buffer-access"))]
-        {
-            use windows::Storage::Streams::DataWriter;
-            let len = report.Data()?.Length()?;
-            let writer = DataWriter::new()?;
-            writer.WriteBytes(&buf)?;
-            for _ in 0..(len.checked_sub(buf.len() as u32).unwrap_or(0)) {
-                writer.WriteByte(0)?;
-            }
-            report.SetData(&writer.DetachBuffer()?)?;
-        }
+        let mut buffer = report.Data()?;
+        //TODO maybe don't panic if buf is to large
+        let (buffer, remainder) = buffer.as_mut_slice()?
+            .split_at_mut(buf.len());
+        buffer.copy_from_slice(buf);
+        remainder.fill(0);
 
         self.device.SendOutputReportAsync(&report)?.await?;
         Ok(())
@@ -147,23 +123,4 @@ impl From<BackendError> for ErrorSource {
     fn from(value: BackendError) -> Self {
         ErrorSource::PlatformSpecific(value)
     }
-}
-
-#[cfg(feature = "direct-buffer-access")]
-use windows::Storage::Streams::IBuffer;
-
-#[cfg(feature = "direct-buffer-access")]
-fn to_slice(buffer: &IBuffer) -> HidResult<&[u8]> {
-    use windows::core::ComInterface;
-    use windows::Win32::System::WinRT::IBufferByteAccess;
-    let bytes: IBufferByteAccess = buffer.cast()?;
-    Ok(unsafe { std::slice::from_raw_parts(bytes.Buffer()?, buffer.Length()? as usize) })
-}
-
-#[cfg(feature = "direct-buffer-access")]
-fn to_slice_mut(buffer: &mut IBuffer) -> HidResult<&mut [u8]> {
-    use windows::core::ComInterface;
-    use windows::Win32::System::WinRT::IBufferByteAccess;
-    let bytes: IBufferByteAccess = buffer.cast()?;
-    Ok(unsafe { std::slice::from_raw_parts_mut(bytes.Buffer()?, buffer.Length()? as usize) })
 }

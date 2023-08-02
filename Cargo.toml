@@ -3,12 +3,6 @@ name = "async-hid"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[features]
-default = ["direct-buffer-access"]
-direct-buffer-access = ["windows/Win32_System_WinRT"]
-
 [dependencies]
 
 [target."cfg(target_os = \"windows\")".dependencies]
@@ -20,7 +14,8 @@ windows = { version = "0.48", features = [
     "Foundation",
     "Foundation_Collections",
     "Storage",
-    "Storage_Streams"
+    "Storage_Streams",
+    "Win32_System_WinRT"
 ]}
 
 [target."cfg(target_os = \"linux\")".dependencies]
@@ -29,5 +24,4 @@ udev = "0.7"
 nix = { version = "0.26", features = ["fs"] }
 
 [dev-dependencies]
-#pollster = { version = "0.3", features = ["macro"] }
 tokio = { version = "1", features = ["full"] }
