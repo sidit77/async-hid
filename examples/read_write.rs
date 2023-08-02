@@ -1,4 +1,4 @@
-use async_hid::{DeviceInfo, HidResult};
+use async_hid::{AccessMode, DeviceInfo, HidResult};
 
 #[tokio::main]
 async fn main() -> HidResult<()> {
@@ -7,7 +7,7 @@ async fn main() -> HidResult<()> {
         .iter()
         .find(|info| info.matches(0xFFC0, 0x1, 0x1038, 0x2206))
         .expect("Could not find device")
-        .open()
+        .open(AccessMode::ReadWrite)
         .await?;
 
     device.write_output_report(&[0x0, 0xb0]).await?;

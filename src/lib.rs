@@ -22,11 +22,12 @@ impl DeviceInfo {
         backend::enumerate().await
     }
 
-    pub async fn open(&self) -> HidResult<Device> {
-        let dev = backend::open(&self.id.0).await?;
+    pub async fn open(&self, mode: AccessMode) -> HidResult<Device> {
+        let dev = backend::open(&self.id.0, mode).await?;
         Ok(Device {
             inner: dev,
-            info: self.clone()
+            info: self.clone(),
+            mode,
         })
     }
 
@@ -37,17 +38,23 @@ impl DeviceInfo {
 
 pub struct Device {
     inner: BackendDevice,
-    #[allow(dead_code)]
-    info: DeviceInfo
+    info: DeviceInfo,
+    mode: AccessMode
 }
 
 impl Device {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+        debug_assert!(self.mode.readable());
         self.inner.read_input_report(buf).await
     }
 
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
+        debug_assert!(self.mode.writeable());
         self.inner.write_output_report(buf).await
+    }
+
+    pub fn info(&self) -> &DeviceInfo {
+        &self.info
     }
 }
 
@@ -64,5 +71,22 @@ impl From<BackendDeviceId> for DeviceId {
 impl Debug for DeviceId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.0)
+    }
+}
+
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+pub enum AccessMode {
+    Read,
+    Write,
+    #[default]
+    ReadWrite
+}
+
+impl AccessMode {
+    pub fn readable(self) -> bool {
+        matches!(self, Self::Read | Self::ReadWrite)
+    }
+    pub fn writeable(self) -> bool {
+        matches!(self, Self::Write | Self::ReadWrite)
     }
 }

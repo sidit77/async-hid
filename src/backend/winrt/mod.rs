@@ -12,7 +12,7 @@ use windows::Storage::FileAccessMode;
 use crate::backend::winrt::utils::IBufferExt;
 
 use crate::error::{ErrorSource, HidResult};
-use crate::DeviceInfo;
+use crate::{AccessMode, DeviceInfo};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -53,21 +53,75 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceIn
 }
 
 #[derive(Debug, Clone)]
+struct InputReceiver {
+    buffer: Receiver<HidInputReport>,
+    token: EventRegistrationToken
+}
+
+impl InputReceiver {
+    fn new(device: &HidDevice) -> HidResult<Self> {
+        let (sender, receiver) = flume::bounded(64);
+        let drain = receiver.clone();
+        let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: &Option<HidInputReportReceivedEventArgs>| {
+            if let Some(args) = args {
+                let mut msg = args.Report()?;
+                while let Err(TrySendError::Full(ret)) = sender.try_send(msg) {
+                    let _ = drain.try_recv();
+                    msg = ret;
+                }
+            }
+            Ok(())
+        }))?;
+        Ok(Self {
+            buffer: receiver,
+            token,
+        })
+    }
+
+    async fn recv_async(&self) -> HidInputReport {
+        self.buffer.recv_async().await.unwrap()
+    }
+
+    fn stop(self, device: &HidDevice) -> HidResult<()> {
+        Ok(device.RemoveInputReportReceived(self.token)?)
+    }
+}
+
+
+#[derive(Debug, Clone)]
 pub struct BackendDevice {
     device: HidDevice,
-    input: Receiver<HidInputReport>,
-    token: EventRegistrationToken
+    input: Option<InputReceiver>
 }
 
 impl Drop for BackendDevice {
     fn drop(&mut self) {
-        self.device.RemoveInputReportReceived(self.token).unwrap();
+        if let Some(input) = self.input.take() {
+            input.stop(&self.device).unwrap();
+        }
     }
+}
+
+pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
+    let device = HidDevice::FromIdAsync(id, mode.into())?.await?;
+    let input = match mode.readable() {
+        true => Some(InputReceiver::new(&device)?),
+        false => None
+    };
+    Ok(BackendDevice {
+        device,
+        input
+    })
 }
 
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        let report = self.input.recv_async().await.unwrap();
+        let report = self
+            .input
+            .as_ref()
+            .expect("Reading is disabled")
+            .recv_async()
+            .await;
         let buffer = report.Data()?;
         let buffer = buffer.as_slice()?;
         assert!(!buffer.is_empty());
@@ -95,32 +149,21 @@ impl BackendDevice {
     }
 }
 
-pub async fn open(id: &BackendDeviceId) -> HidResult<BackendDevice> {
-    let device = HidDevice::FromIdAsync(id, FileAccessMode::ReadWrite)?.await?;
-    let (sender, receiver) = flume::bounded(64);
-    let drain = receiver.clone();
-    let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: &Option<HidInputReportReceivedEventArgs>| {
-        if let Some(args) = args {
-            let mut msg = args.Report()?;
-            while let Err(TrySendError::Full(ret)) = sender.try_send(msg) {
-                let _ = drain.try_recv();
-                msg = ret;
-            }
-        }
-        Ok(())
-    }))?;
-    Ok(BackendDevice {
-        device,
-        input: receiver,
-        token
-    })
-}
-
 pub type BackendDeviceId = HSTRING;
 pub type BackendError = windows::core::Error;
 
 impl From<BackendError> for ErrorSource {
     fn from(value: BackendError) -> Self {
         ErrorSource::PlatformSpecific(value)
+    }
+}
+
+impl From<AccessMode> for FileAccessMode {
+    fn from(value: AccessMode) -> Self {
+        match value {
+            AccessMode::Read => FileAccessMode::Read,
+            AccessMode::Write => FileAccessMode::ReadWrite,
+            AccessMode::ReadWrite => FileAccessMode::ReadWrite
+        }
     }
 }

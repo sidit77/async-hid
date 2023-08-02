@@ -119,11 +119,11 @@ impl BackendDevice {
 
 }
 
-pub async fn open(id: &BackendDeviceId) -> HidResult<BackendDevice> {
+pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
 
     let fd: OwnedFd = OpenOptions::new()
-        .read(true)
-        .write(true)
+        .read(mode.readable())
+        .write(mode.writeable())
         .custom_flags((OFlag::O_CLOEXEC | OFlag::O_NONBLOCK).bits())
         .open(id)?
         .into();
