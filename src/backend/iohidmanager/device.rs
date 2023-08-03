@@ -1,11 +1,11 @@
-use std::ffi::c_char;
-use core_foundation::base::{CFRelease, CFType, kCFAllocatorDefault, TCFType};
+use core_foundation::base::{CFRelease, CFType, TCFType};
 use core_foundation::{ConcreteCFType, impl_TCFType};
 use core_foundation::number::CFNumber;
-use core_foundation::string::{CFString, CFStringCreateWithCString, kCFStringEncodingUTF8};
+use core_foundation::string::CFString;
 use io_kit_sys::hid::base::IOHIDDeviceRef;
 use io_kit_sys::hid::device::*;
 use crate::{ensure, HidError, HidResult};
+use crate::backend::iohidmanager::utils::Key;
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -32,7 +32,8 @@ impl Drop for IOHIDDevice {
 
 impl IOHIDDevice {
 
-    pub fn untyped_property(&self, key: &CFString) -> HidResult<CFType> {
+    pub fn untyped_property(&self, key: impl Key) -> HidResult<CFType> {
+        let key = key.to_string();
         let property_ref = unsafe {
             IOHIDDeviceGetProperty(self.as_concrete_TypeRef(), key.as_concrete_TypeRef())
         };
@@ -41,31 +42,24 @@ impl IOHIDDevice {
         Ok(property)
     }
 
-    pub fn property<T: ConcreteCFType>(&self, key: &CFString) -> HidResult<T> {
+    pub fn property<T: ConcreteCFType>(&self, key: impl Key) -> HidResult<T> {
         self.untyped_property(key)?
             .downcast_into::<T>()
             .ok_or(HidError::custom("Failed to cast property"))
     }
 
-    pub fn get_i32_property(&self, key: *const c_char) -> HidResult<i32> {
-        self.property::<CFNumber>(&make_string(key))
+    pub fn get_i32_property(&self, key: impl Key) -> HidResult<i32> {
+        self.property::<CFNumber>(key)
             .and_then(|v| v
                 .to_i32()
                 .ok_or(HidError::custom("Property is not an i32")))
     }
 
-    pub fn get_string_property(&self, key: *const c_char) -> HidResult<String> {
-        self.property::<CFString>(&make_string(key))
+    pub fn get_string_property(&self, key: impl Key) -> HidResult<String> {
+        self.property::<CFString>(key)
             .map(|v| v.to_string())
     }
 
 
 
-}
-
-fn make_string(string: *const c_char) -> CFString {
-    unsafe {
-        let string = CFStringCreateWithCString(kCFAllocatorDefault, string, kCFStringEncodingUTF8);
-        CFString::wrap_under_create_rule(string)
-    }
 }
