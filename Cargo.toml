@@ -24,6 +24,11 @@ tokio = { version = "1", features = ["net", "rt"] }
 udev = "0.7"
 nix = { version = "0.26", features = ["fs"] }
 
+[target."cfg(target_os = \"macos\")".dependencies]
+core-foundation = "0.9"
+io-kit-sys = "0.3"
+mach2 = "0.4"
+
 [dev-dependencies]
 simple_logger = "4"
 tokio = { version = "1", features = ["full"] }
