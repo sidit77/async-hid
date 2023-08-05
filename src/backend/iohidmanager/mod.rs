@@ -4,18 +4,16 @@ mod service;
 mod utils;
 mod runloop;
 
-use std::cell::RefCell;
 use std::sync::Arc;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use async_channel::{bounded, Receiver};
+use bytes::{BufMut, Bytes, BytesMut};
 use core_foundation::array::CFArray;
 use core_foundation::base::{TCFType};
 use core_foundation::dictionary::{CFDictionary};
 use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
 use core_foundation::string::CFString;
 use io_kit_sys::hid::keys::*;
-use io_kit_sys::hid::usage_tables::kHIDUsage_Csmr_ACJustifyBlockV;
 use io_kit_sys::types::IOOptionBits;
-use tokio::sync::mpsc::{channel, Receiver};
 use crate::{AccessMode, DeviceInfo, ErrorSource, HidResult};
 use crate::backend::iohidmanager::device::{CallbackGuard, IOHIDDevice};
 use crate::backend::iohidmanager::manager::IOHIDManager;
@@ -81,7 +79,7 @@ pub struct BackendDevice {
     open_options: IOOptionBits,
     run_loop: Arc<RunLoop>,
     _callback: CallbackGuard,
-    read_channel: RefCell<Receiver<Bytes>>
+    read_channel: Receiver<Bytes>
 }
 
 impl Drop for BackendDevice {
@@ -99,7 +97,7 @@ pub async fn open(id: &BackendDeviceId, _mode: AccessMode) -> HidResult<BackendD
     device.open(open_options)?;
 
     let mut byte_buffer = BytesMut::with_capacity(1024);
-    let (sender, receiver) = channel(64);
+    let (sender, receiver) = bounded(64);
 
     let callback = device.register_input_report_callback(move |report| {
         byte_buffer.put(report);
@@ -115,13 +113,13 @@ pub async fn open(id: &BackendDeviceId, _mode: AccessMode) -> HidResult<BackendD
         open_options,
         run_loop: Arc::new(run_loop),
         _callback: callback,
-        read_channel: RefCell::new(receiver),
+        read_channel: receiver,
     })
 }
 
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        let bytes = self.read_channel.borrow_mut().recv().await.unwrap();
+        let bytes = self.read_channel.recv().await.unwrap();
         let length = bytes.len().min(buf.len());
         buf[..length].copy_from_slice(&bytes[..length]);
         Ok(length)

@@ -4,15 +4,12 @@ use std::ptr::null_mut;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use async_channel::{bounded, Sender, TryRecvError, unbounded};
 use core_foundation::base::{kCFAllocatorDefault, TCFType};
-use core_foundation::runloop::{CFRunLoop, CFRunLoopRunInMode, CFRunLoopRunResult, CFRunLoopSource, CFRunLoopSourceContext, CFRunLoopSourceCreate, CFRunLoopSourceSignal, CFRunLoopStop, CFRunLoopWakeUp};
+use core_foundation::runloop::{CFRunLoop, CFRunLoopRunResult, CFRunLoopSource, CFRunLoopSourceContext, CFRunLoopSourceCreate, CFRunLoopSourceSignal, CFRunLoopWakeUp};
 use core_foundation::string::CFString;
-use tokio::sync::mpsc::{Sender, unbounded_channel, UnboundedSender};
-use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::oneshot::channel;
 use crate::backend::iohidmanager::device::IOHIDDevice;
 use crate::{HidError, HidResult};
-use crate::backend::open;
 
 struct LoopSource(CFRunLoopSource, CFRunLoop);
 unsafe impl Send for LoopSource {}
@@ -34,14 +31,14 @@ impl LoopSource {
 
 struct LoopSender<T> {
     source: LoopSource,
-    sender: UnboundedSender<T>
+    sender: Sender<T>
 }
 
 impl<T> LoopSender<T> {
 
     fn send(&self, item: T) -> HidResult<()> {
-        self.sender.send(item)
-            .map_err(|_| HidError::custom("Loop is closed"))?;
+        self.sender.try_send(item)
+            .map_err(|_| HidError::custom("Failed to send element into the run loop"))?;
         self.source.signal();
         Ok(())
     }
@@ -68,7 +65,7 @@ pub struct RunLoop {
 impl RunLoop {
 
     pub async fn new() -> HidResult<Self> {
-        let (sender, receiver) = channel::<LoopSender<LoopCommand>>();
+        let (sender, receiver) = bounded(1);
 
         let thread = Some(thread::spawn(|| {
             let run_loop_mode = CFString::new(&format!("ASYNC_HID_{:?}", thread::current().id()));
@@ -94,12 +91,13 @@ impl RunLoop {
             };
             run_loop.add_source(&source, run_loop_mode.as_concrete_TypeRef());
 
-            let (ext_sender, mut receiver) = unbounded_channel();
+            let (ext_sender, receiver) = unbounded();
             let ext_sender = LoopSender {
                 source: LoopSource(source, CFRunLoop::get_current()),
                 sender: ext_sender,
             };
-            sender.send(ext_sender).unwrap_or_else(|_| panic!("Failed to send sender"));
+            sender.try_send(ext_sender).unwrap_or_else(|_| panic!("Failed to send sender"));
+            drop(sender);
 
             'outer: loop {
                 let result = CFRunLoop::run_in_mode(run_loop_mode.as_concrete_TypeRef(), Duration::from_secs(1000), true);
@@ -116,7 +114,7 @@ impl RunLoop {
                                 LoopCommand::Unschedule(dev) => dev.unschedule_from_runloop(&run_loop, &run_loop_mode),
                             },
                             Err(TryRecvError::Empty) => break,
-                            Err(TryRecvError::Disconnected) => break 'outer
+                            Err(TryRecvError::Closed) => break 'outer
                         }
                     },
                     _ => break
@@ -125,6 +123,7 @@ impl RunLoop {
         }));
 
         let sender = receiver
+            .recv()
             .await
             .map_err(|_| HidError::custom("Run loop failed to start"))?;
 
