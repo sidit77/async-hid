@@ -137,12 +137,14 @@ impl BackendDevice {
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
         let report = self.device.CreateOutputReport()?;
 
-        let mut buffer = report.Data()?;
-        //TODO maybe don't panic if buf is to large
-        let (buffer, remainder) = buffer.as_mut_slice()?
-            .split_at_mut(buf.len());
-        buffer.copy_from_slice(buf);
-        remainder.fill(0);
+        {
+            let mut buffer = report.Data()?;
+            //TODO maybe don't panic if buf is to large
+            let (buffer, remainder) = buffer.as_mut_slice()?
+                .split_at_mut(buf.len());
+            buffer.copy_from_slice(buf);
+            remainder.fill(0);
+        }
 
         self.device.SendOutputReportAsync(&report)?.await?;
         Ok(())
