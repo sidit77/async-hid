@@ -1,25 +1,27 @@
-mod manager;
 mod device;
+mod manager;
+mod runloop;
 mod service;
 mod utils;
-mod runloop;
 
 use std::sync::Arc;
+
 use async_channel::{bounded, Receiver, TrySendError};
 use bytes::{BufMut, Bytes, BytesMut};
 use core_foundation::array::CFArray;
-use core_foundation::base::{TCFType};
-use core_foundation::dictionary::{CFDictionary};
-use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+use core_foundation::base::TCFType;
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::CFString;
 use io_kit_sys::hid::keys::*;
 use io_kit_sys::types::IOOptionBits;
-use crate::{AccessMode, DeviceInfo, ensure, ErrorSource, HidError, HidResult};
+
 use crate::backend::iohidmanager::device::{CallbackGuard, IOHIDDevice};
 use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::iohidmanager::runloop::RunLoop;
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
 use crate::backend::iohidmanager::utils::CFDictionaryExt;
+use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
 
 pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
     let mut manager = IOHIDManager::new()?;
@@ -35,13 +37,12 @@ pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
 }
 
 fn get_device_infos(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
-    let primary_usage_page = device .get_i32_property(kIOHIDPrimaryUsagePageKey)? as u16;
+    let primary_usage_page = device.get_i32_property(kIOHIDPrimaryUsagePageKey)? as u16;
     let primary_usage = device.get_i32_property(kIOHIDPrimaryUsageKey)? as u16;
     let vendor_id = device.get_i32_property(kIOHIDVendorIDKey)? as u16;
     let product_id = device.get_i32_property(kIOHIDProductIDKey)? as u16;
     let name = device.get_string_property(kIOHIDProductKey)?;
-    let id = IOService::try_from(device)
-        .and_then(|i| i.get_registry_entry_id())?;
+    let id = IOService::try_from(device).and_then(|i| i.get_registry_entry_id())?;
 
     let info = DeviceInfo {
         id: id.into(),
@@ -49,30 +50,31 @@ fn get_device_infos(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
         product_id,
         vendor_id,
         usage_id: primary_usage,
-        usage_page: primary_usage_page,
+        usage_page: primary_usage_page
     };
 
     let mut results = Vec::new();
-    results.extend(device
-        .property::<CFArray>(kIOHIDDeviceUsagePairsKey)?
-        .iter()
-        .map(|i| unsafe { CFDictionary::wrap_under_get_rule(*i as _) })
-        .filter_map(|dict| {
-            let usage = dict.lookup_i32(kIOHIDDeviceUsageKey).ok()? as u16;
-            let usage_page = dict.lookup_i32(kIOHIDDeviceUsagePageKey).ok()? as u16;
-            Some((usage, usage_page))
-        })
-        .filter(|(usage, usage_page)| (*usage_page != primary_usage_page) || (*usage != primary_usage))
-        .map(|(usage_id, usage_page)| DeviceInfo {
-            usage_id,
-            usage_page,
-            ..info.clone()
-        }));
+    results.extend(
+        device
+            .property::<CFArray>(kIOHIDDeviceUsagePairsKey)?
+            .iter()
+            .map(|i| unsafe { CFDictionary::wrap_under_get_rule(*i as _) })
+            .filter_map(|dict| {
+                let usage = dict.lookup_i32(kIOHIDDeviceUsageKey).ok()? as u16;
+                let usage_page = dict.lookup_i32(kIOHIDDeviceUsagePageKey).ok()? as u16;
+                Some((usage, usage_page))
+            })
+            .filter(|(usage, usage_page)| (*usage_page != primary_usage_page) || (*usage != primary_usage))
+            .map(|(usage_id, usage_page)| DeviceInfo {
+                usage_id,
+                usage_page,
+                ..info.clone()
+            })
+    );
     results.push(info.clone());
 
     Ok(results)
 }
-
 
 pub struct BackendDevice {
     device: IOHIDDevice,
@@ -84,11 +86,14 @@ pub struct BackendDevice {
 
 impl Drop for BackendDevice {
     fn drop(&mut self) {
-        self.run_loop.unschedule_device(&self.device)
+        self.run_loop
+            .unschedule_device(&self.device)
             .unwrap_or_else(|_| log::warn!("Failed to unschedule IOHIDDevice from run loop"));
         let default_mode = unsafe { CFString::wrap_under_create_rule(kCFRunLoopDefaultMode) };
-        self.device.schedule_with_runloop(&CFRunLoop::get_main(), &default_mode);
-        self.device.close(self.open_options)
+        self.device
+            .schedule_with_runloop(&CFRunLoop::get_main(), &default_mode);
+        self.device
+            .close(self.open_options)
             .unwrap_or_else(|err| log::warn!("Failed to close IOHIDDevice\n\t{err:?}"));
     }
 }
@@ -119,7 +124,7 @@ pub async fn open(id: &BackendDeviceId, _mode: AccessMode) -> HidResult<BackendD
         open_options,
         run_loop,
         _callback: callback,
-        read_channel: receiver,
+        read_channel: receiver
     })
 }
 

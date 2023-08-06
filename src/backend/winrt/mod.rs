@@ -9,10 +9,10 @@ use windows::Devices::Enumeration::DeviceInformation;
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
 use windows::Storage::FileAccessMode;
-use crate::backend::winrt::utils::{IBufferExt, WinResultExt};
 
+use crate::backend::winrt::utils::{IBufferExt, WinResultExt};
 use crate::error::{ErrorSource, HidResult};
-use crate::{AccessMode, DeviceInfo, ensure, HidError};
+use crate::{ensure, AccessMode, DeviceInfo, HidError};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -29,14 +29,16 @@ pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
     //    .await;
     let devices = iter(
         DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
-        .await?
-        .into_iter())
-        .then(get_device_information)
-        .filter_map(|r| r
-            .map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
-            .ok())
-        .collect()
-        .await;
+            .await?
+            .into_iter()
+    )
+    .then(get_device_information)
+    .filter_map(|r| {
+        r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
+            .ok()
+    })
+    .collect()
+    .await;
     Ok(devices)
 }
 
@@ -77,21 +79,20 @@ impl InputReceiver {
             }
             Ok(())
         }))?;
-        Ok(Self {
-            buffer: receiver,
-            token,
-        })
+        Ok(Self { buffer: receiver, token })
     }
 
     async fn recv_async(&self) -> HidInputReport {
-        self.buffer.recv_async().await.expect("Input report handler got dropped unexpectedly")
+        self.buffer
+            .recv_async()
+            .await
+            .expect("Input report handler got dropped unexpectedly")
     }
 
     fn stop(self, device: &HidDevice) -> HidResult<()> {
         Ok(device.RemoveInputReportReceived(self.token)?)
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct BackendDevice {
@@ -102,7 +103,8 @@ pub struct BackendDevice {
 impl Drop for BackendDevice {
     fn drop(&mut self) {
         if let Some(input) = self.input.take() {
-            input.stop(&self.device)
+            input
+                .stop(&self.device)
                 .unwrap_or_else(|err| log::warn!("Failed to unregister input report callback\n\t{err:?}"));
         }
     }
@@ -116,10 +118,7 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
         true => Some(InputReceiver::new(&device)?),
         false => None
     };
-    Ok(BackendDevice {
-        device,
-        input
-    })
+    Ok(BackendDevice { device, input })
 }
 
 impl BackendDevice {
@@ -134,9 +133,7 @@ impl BackendDevice {
         let buffer = buffer.as_slice()?;
         ensure!(!buffer.is_empty(), HidError::custom("Input report is empty"));
         let size = buf.len().min(buffer.len());
-        let start = (buffer[0] == 0x0)
-            .then_some(1)
-            .unwrap_or(0);
+        let start = (buffer[0] == 0x0).then_some(1).unwrap_or(0);
         buf[..(size - start)].copy_from_slice(&buffer[start..size]);
 
         Ok(size - start)
@@ -149,8 +146,7 @@ impl BackendDevice {
         {
             let mut buffer = report.Data()?;
             ensure!(buffer.Length()? as usize >= buf.len(), HidError::custom("Output report is too large"));
-            let (buffer, remainder) = buffer.as_mut_slice()?
-                .split_at_mut(buf.len());
+            let (buffer, remainder) = buffer.as_mut_slice()?.split_at_mut(buf.len());
             buffer.copy_from_slice(buf);
             remainder.fill(0);
         }

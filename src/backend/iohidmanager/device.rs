@@ -1,21 +1,23 @@
 use std::ffi::c_void;
-use std::mem::{transmute};
+use std::mem::transmute;
 use std::ptr::{null, null_mut};
 use std::slice::from_raw_parts;
 use std::sync::Arc;
-use core_foundation::base::{CFIndex, CFRelease, CFType, kCFAllocatorDefault, TCFType};
-use core_foundation::{ConcreteCFType, impl_TCFType};
+
+use core_foundation::base::{kCFAllocatorDefault, CFIndex, CFRelease, CFType, TCFType};
 use core_foundation::number::CFNumber;
 use core_foundation::runloop::CFRunLoop;
 use core_foundation::string::CFString;
-use io_kit_sys::hid::base::{IOHIDDeviceRef};
+use core_foundation::{impl_TCFType, ConcreteCFType};
+use io_kit_sys::hid::base::IOHIDDeviceRef;
 use io_kit_sys::hid::device::*;
-use io_kit_sys::hid::keys::{IOHIDReportType, kIOHIDMaxInputReportSizeKey};
-use io_kit_sys::ret::{IOReturn, kIOReturnSuccess};
+use io_kit_sys::hid::keys::{kIOHIDMaxInputReportSizeKey, IOHIDReportType};
+use io_kit_sys::ret::{kIOReturnSuccess, IOReturn};
 use io_kit_sys::types::IOOptionBits;
-use crate::{ensure, HidError, HidResult};
+
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
 use crate::backend::iohidmanager::utils::Key;
+use crate::{ensure, HidError, HidResult};
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -54,12 +56,9 @@ impl Drop for IOHIDDevice {
 }
 
 impl IOHIDDevice {
-
     pub fn untyped_property(&self, key: impl Key) -> HidResult<CFType> {
         let key = key.to_string();
-        let property_ref = unsafe {
-            IOHIDDeviceGetProperty(self.as_concrete_TypeRef(), key.as_concrete_TypeRef())
-        };
+        let property_ref = unsafe { IOHIDDeviceGetProperty(self.as_concrete_TypeRef(), key.as_concrete_TypeRef()) };
         ensure!(!property_ref.is_null(), HidError::custom("Failed to retrieve property"));
         let property = unsafe { CFType::wrap_under_get_rule(property_ref) };
         Ok(property)
@@ -73,52 +72,49 @@ impl IOHIDDevice {
 
     pub fn get_i32_property(&self, key: impl Key) -> HidResult<i32> {
         self.property::<CFNumber>(key)
-            .and_then(|v| v
-                .to_i32()
-                .ok_or(HidError::custom("Property is not an i32")))
+            .and_then(|v| v.to_i32().ok_or(HidError::custom("Property is not an i32")))
     }
 
     pub fn get_string_property(&self, key: impl Key) -> HidResult<String> {
-        self.property::<CFString>(key)
-            .map(|v| v.to_string())
+        self.property::<CFString>(key).map(|v| v.to_string())
     }
 
     pub fn open(&self, options: IOOptionBits) -> HidResult<()> {
         let ret = unsafe { IOHIDDeviceOpen(self.as_concrete_TypeRef(), options) };
         //TODO check for kIOReturnNotPermitted
-        ensure!(ret == kIOReturnSuccess, HidError::custom(format!("failed to open IOHIDDevice: {:?}", ret)));
+        ensure!(
+            ret == kIOReturnSuccess,
+            HidError::custom(format!("failed to open IOHIDDevice: {:?}", ret))
+        );
         Ok(())
     }
 
     pub fn close(&self, options: IOOptionBits) -> HidResult<()> {
         let ret = unsafe { IOHIDDeviceClose(self.as_concrete_TypeRef(), options) };
-        ensure!(ret == kIOReturnSuccess, HidError::custom(format!("failed to close IOHIDDevice: {:?}", ret)));
+        ensure!(
+            ret == kIOReturnSuccess,
+            HidError::custom(format!("failed to close IOHIDDevice: {:?}", ret))
+        );
         Ok(())
     }
 
     pub fn schedule_with_runloop(&self, runloop: &CFRunLoop, mode: &CFString) {
         unsafe {
-            IOHIDDeviceScheduleWithRunLoop(
-                self.as_concrete_TypeRef(),
-                runloop.as_concrete_TypeRef(),
-                mode.as_concrete_TypeRef());
+            IOHIDDeviceScheduleWithRunLoop(self.as_concrete_TypeRef(), runloop.as_concrete_TypeRef(), mode.as_concrete_TypeRef());
         }
     }
 
     pub fn unschedule_from_runloop(&self, runloop: &CFRunLoop, mode: &CFString) {
         unsafe {
-            IOHIDDeviceUnscheduleFromRunLoop(
-                self.as_concrete_TypeRef(),
-                runloop.as_concrete_TypeRef(),
-                mode.as_concrete_TypeRef());
+            IOHIDDeviceUnscheduleFromRunLoop(self.as_concrete_TypeRef(), runloop.as_concrete_TypeRef(), mode.as_concrete_TypeRef());
         }
     }
 
     pub fn register_input_report_callback<F>(&self, callback: F) -> HidResult<CallbackGuard>
-        where F: FnMut(&[u8]) + Send + 'static
+    where
+        F: FnMut(&[u8]) + Send + 'static
     {
-        let max_input_report_len = self
-            .get_i32_property(kIOHIDMaxInputReportSizeKey)? as usize;
+        let max_input_report_len = self.get_i32_property(kIOHIDMaxInputReportSizeKey)? as usize;
 
         let mut report_buffer = vec![0u8; max_input_report_len].into_boxed_slice();
         let callback: InputReportCallback = Box::new(callback);
@@ -129,13 +125,13 @@ impl IOHIDDevice {
                 report_buffer.as_mut_ptr(),
                 report_buffer.len() as _,
                 hid_report_callback,
-                Arc::as_ptr(&callback) as _,
+                Arc::as_ptr(&callback) as _
             );
         }
         Ok(CallbackGuard {
             device: self.clone(),
             _report_buffer: report_buffer,
-            _callback: callback,
+            _callback: callback
         })
     }
 }
@@ -154,18 +150,15 @@ impl Drop for CallbackGuard {
         // Until io_kit_sys is fixed this seems to be the only way
         #[warn(clippy::transmute_null_to_fn)]
         unsafe {
-            IOHIDDeviceRegisterInputReportCallback(
-                self.device.as_concrete_TypeRef(),
-                null_mut(),
-                0,
-                transmute(null::<()>()),
-                null_mut(),
-            )
+            IOHIDDeviceRegisterInputReportCallback(self.device.as_concrete_TypeRef(), null_mut(), 0, transmute(null::<()>()), null_mut())
         }
     }
 }
 
-unsafe extern "C" fn hid_report_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: *mut u8, report_length: CFIndex) {
+unsafe extern "C" fn hid_report_callback(
+    context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: *mut u8,
+    report_length: CFIndex
+) {
     let callback: &mut InputReportCallback = &mut *(context as *mut InputReportCallback);
     let data = from_raw_parts(report, report_length as usize);
     callback(data);

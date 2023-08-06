@@ -5,22 +5,22 @@ use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+
 use nix::fcntl::OFlag;
 use nix::unistd::{read, write};
-use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
+use tokio::io::Interest;
 use tokio::task::spawn_blocking;
-
 use udev::{Device, Enumerator};
 
-use crate::{DeviceInfo, ensure, ErrorSource, HidError, HidResult};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
 use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
+use crate::{ensure, DeviceInfo, ErrorSource, HidError, HidResult};
 
 pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
     spawn_blocking(enumerate_sync)
         .await
-        .map_err( |_| HidError::custom("Background task failed"))?
+        .map_err(|_| HidError::custom("Background task failed"))?
 }
 
 fn enumerate_sync() -> HidResult<Vec<DeviceInfo>> {
@@ -34,7 +34,6 @@ fn enumerate_sync() -> HidResult<Vec<DeviceInfo>> {
         .collect();
     Ok(devices)
 }
-
 
 fn get_device_info(raw_device: Device) -> HidResult<Vec<DeviceInfo>> {
     let device = raw_device
@@ -67,22 +66,22 @@ fn get_device_info(raw_device: Device) -> HidResult<Vec<DeviceInfo>> {
         usage_page: 0
     };
     let results = HidrawReportDescriptor::from_syspath(raw_device.syspath())
-        .map(|descriptor| descriptor
-            .usages()
-            .map(|(usage_page, usage_id)| DeviceInfo {
-                usage_page,
-                usage_id,
-                ..info.clone()
-            })
-            .collect())
+        .map(|descriptor| {
+            descriptor
+                .usages()
+                .map(|(usage_page, usage_id)| DeviceInfo {
+                    usage_page,
+                    usage_id,
+                    ..info.clone()
+                })
+                .collect()
+        })
         .unwrap_or_else(|_| vec![info]);
     Ok(results)
 }
 
 fn parse_hid_vid_pid(s: &str) -> Option<(u16, u16, u16)> {
-    let mut elems = s
-        .split(':')
-        .filter_map(|s| u16::from_str_radix(s, 16).ok());
+    let mut elems = s.split(':').filter_map(|s| u16::from_str_radix(s, 16).ok());
     let devtype = elems.next()?;
     let vendor = elems.next()?;
     let product = elems.next()?;
@@ -96,31 +95,24 @@ pub struct BackendDevice {
 }
 
 impl BackendDevice {
-
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        self
-            .fd
-            .async_io(Interest::READABLE, |fd| read(fd.as_raw_fd(), buf)
-                .map_err(BackendError::from))
+        self.fd
+            .async_io(Interest::READABLE, |fd| read(fd.as_raw_fd(), buf).map_err(BackendError::from))
             .await
             .map_err(HidError::from)
     }
 
     pub async fn write_output_report(&self, data: &[u8]) -> HidResult<()> {
         ensure!(!data.is_empty(), HidError::zero_sized_data());
-        self
-            .fd
-            .async_io(Interest::WRITABLE, |fd| write(fd.as_raw_fd(), data)
-                .map_err(BackendError::from))
+        self.fd
+            .async_io(Interest::WRITABLE, |fd| write(fd.as_raw_fd(), data).map_err(BackendError::from))
             .await
             .map_err(HidError::from)
             .map(|i| debug_assert_eq!(i, data.len()))
     }
-
 }
 
 pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
-
     let fd: OwnedFd = OpenOptions::new()
         .read(mode.readable())
         .write(mode.writeable())
@@ -132,9 +124,7 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
     unsafe { hidraw_ioc_grdescsize(fd.as_raw_fd(), &mut size) }
         .map_err(|e| HidError::custom(format!("ioctl(GRDESCSIZE) error for {:?}, not a HIDRAW device?: {}", id, e)))?;
 
-    Ok(BackendDevice {
-        fd: AsyncFd::new(fd)?,
-    })
+    Ok(BackendDevice { fd: AsyncFd::new(fd)? })
 }
 
 pub type BackendDeviceId = PathBuf;
@@ -145,4 +135,3 @@ impl From<BackendError> for ErrorSource {
         ErrorSource::PlatformSpecific(value)
     }
 }
-

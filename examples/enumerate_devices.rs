@@ -1,5 +1,5 @@
-use simple_logger::SimpleLogger;
 use async_hid::{DeviceInfo, HidResult};
+use simple_logger::SimpleLogger;
 
 #[tokio::main]
 async fn main() -> HidResult<()> {

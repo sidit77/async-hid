@@ -20,12 +20,11 @@ pub struct HidError {
 }
 
 impl HidError {
-
     #[track_caller]
     pub fn custom(msg: impl Into<Cow<'static, str>>) -> Self {
         Self {
             location: Location::caller(),
-            source: ErrorSource::Custom(msg.into()),
+            source: ErrorSource::Custom(msg.into())
         }
     }
 
@@ -33,10 +32,9 @@ impl HidError {
     pub fn zero_sized_data() -> Self {
         Self {
             location: Location::caller(),
-            source: ErrorSource::InvalidZeroSizeData,
+            source: ErrorSource::InvalidZeroSizeData
         }
     }
-
 }
 
 impl Debug for HidError {
@@ -54,7 +52,6 @@ impl Display for HidError {
 impl Error for HidError {}
 
 impl<T: Into<ErrorSource>> From<T> for HidError {
-
     #[track_caller]
     fn from(value: T) -> Self {
         Self {

@@ -5,11 +5,15 @@ use std::sync::{Arc, Weak};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use async_channel::{bounded, Sender, TryRecvError, unbounded};
+
+use async_channel::{bounded, unbounded, Sender, TryRecvError};
 use async_lock::Mutex;
 use core_foundation::base::{kCFAllocatorDefault, TCFType};
-use core_foundation::runloop::{CFRunLoop, CFRunLoopRunResult, CFRunLoopSource, CFRunLoopSourceContext, CFRunLoopSourceCreate, CFRunLoopSourceSignal, CFRunLoopWakeUp};
+use core_foundation::runloop::{
+    CFRunLoop, CFRunLoopRunResult, CFRunLoopSource, CFRunLoopSourceContext, CFRunLoopSourceCreate, CFRunLoopSourceSignal, CFRunLoopWakeUp
+};
 use core_foundation::string::CFString;
+
 use crate::backend::iohidmanager::device::IOHIDDevice;
 use crate::{HidError, HidResult};
 
@@ -38,14 +42,13 @@ struct LoopSender<T> {
 }
 
 impl<T> LoopSender<T> {
-
     fn send(&self, item: T) -> HidResult<()> {
-        self.sender.try_send(item)
+        self.sender
+            .try_send(item)
             .map_err(|_| HidError::custom("Failed to send element into the run loop"))?;
         self.source.signal();
         Ok(())
     }
-
 }
 
 //struct RunLoopState {
@@ -66,7 +69,6 @@ pub struct RunLoop {
 }
 
 impl RunLoop {
-
     async fn new() -> HidResult<Self> {
         let (sender, receiver) = bounded(1);
 
@@ -87,11 +89,11 @@ impl RunLoop {
                 hash: None,
                 schedule: None,
                 cancel: None,
-                perform: dummy,
+                perform: dummy
             };
 
             let source = unsafe {
-                let s = CFRunLoopSourceCreate(kCFAllocatorDefault, 0 , &mut ctx);
+                let s = CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &mut ctx);
                 CFRunLoopSource::wrap_under_create_rule(s)
             };
             run_loop.add_source(&source, run_loop_mode.as_concrete_TypeRef());
@@ -99,9 +101,11 @@ impl RunLoop {
             let (ext_sender, receiver) = unbounded();
             let ext_sender = LoopSender {
                 source: LoopSource(source, CFRunLoop::get_current()),
-                sender: ext_sender,
+                sender: ext_sender
             };
-            sender.try_send(ext_sender).unwrap_or_else(|_| panic!("Failed to send sender"));
+            sender
+                .try_send(ext_sender)
+                .unwrap_or_else(|_| panic!("Failed to send sender"));
             drop(sender);
 
             'outer: loop {
@@ -114,9 +118,9 @@ impl RunLoop {
                                 LoopCommand::Stop => {
                                     run_loop.stop();
                                     break 'outer;
-                                },
+                                }
                                 LoopCommand::Schedule(dev) => dev.schedule_with_runloop(&run_loop, &run_loop_mode),
-                                LoopCommand::Unschedule(dev) => dev.unschedule_from_runloop(&run_loop, &run_loop_mode),
+                                LoopCommand::Unschedule(dev) => dev.unschedule_from_runloop(&run_loop, &run_loop_mode)
                             },
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Closed) => break 'outer
@@ -134,10 +138,7 @@ impl RunLoop {
             .await
             .map_err(|_| HidError::custom("Run loop failed to start"))?;
 
-        Ok(Self {
-            sender,
-            thread,
-        })
+        Ok(Self { sender, thread })
     }
 
     pub fn schedule_device(&self, device: &IOHIDDevice) -> HidResult<()> {
@@ -152,9 +153,7 @@ impl RunLoop {
 
     pub async fn get_run_loop() -> HidResult<Arc<RunLoop>> {
         let mut lock = CURRENT_RUN_LOOP.lock().await;
-        let current = lock
-            .take()
-            .and_then(|weak| weak.upgrade());
+        let current = lock.take().and_then(|weak| weak.upgrade());
         let current = match current {
             None => Arc::new(RunLoop::new().await?),
             Some(current) => current
@@ -162,20 +161,17 @@ impl RunLoop {
         *lock = Some(Arc::downgrade(&current));
         Ok(current)
     }
-
 }
 
 impl Drop for RunLoop {
     fn drop(&mut self) {
-        self.sender.send(LoopCommand::Stop)
+        self.sender
+            .send(LoopCommand::Stop)
             .unwrap_or_else(|_| log::warn!("Failed to send stop signal to the run loop"));
         if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .expect("Failed to join run loop thread");
+            thread.join().expect("Failed to join run loop thread");
         }
     }
 }
 
 static CURRENT_RUN_LOOP: Mutex<Option<Weak<RunLoop>>> = Mutex::new(None);
-

@@ -1,10 +1,13 @@
 use core_foundation::base::TCFType;
 use core_foundation::dictionary::CFMutableDictionaryRef;
 use io_kit_sys::hid::device::IOHIDDeviceGetService;
-use io_kit_sys::{IOObjectRelease, IOObjectRetain, IORegistryEntryGetRegistryEntryID, IORegistryEntryIDMatching, IOServiceGetMatchingService, kIOMasterPortDefault};
 use io_kit_sys::ret::kIOReturnSuccess;
 use io_kit_sys::types::io_service_t;
+use io_kit_sys::{
+    kIOMasterPortDefault, IOObjectRelease, IOObjectRetain, IORegistryEntryGetRegistryEntryID, IORegistryEntryIDMatching, IOServiceGetMatchingService
+};
 use mach2::port::MACH_PORT_NULL;
+
 use crate::backend::iohidmanager::device::IOHIDDevice;
 use crate::{ensure, HidError, HidResult};
 
@@ -33,7 +36,6 @@ impl TryFrom<RegistryEntryId> for IOService {
 }
 
 impl IOService {
-
     pub fn raw(&self) -> io_service_t {
         self.0
     }
@@ -51,7 +53,6 @@ impl IOService {
         ensure!(result == kIOReturnSuccess, HidError::custom("Failed to retrieve entry id"));
         Ok(RegistryEntryId(entry_id))
     }
-
 }
 
 impl Drop for IOService {

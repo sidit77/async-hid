@@ -1,12 +1,14 @@
 use std::ptr::{null, null_mut};
-use core_foundation::base::{CFRelease, kCFAllocatorDefault, TCFType};
+
+use core_foundation::base::{kCFAllocatorDefault, CFRelease, TCFType};
 use core_foundation::impl_TCFType;
 use core_foundation::set::{CFSet, CFSetGetValues};
 use io_kit_sys::hid::base::IOHIDDeviceRef;
 use io_kit_sys::hid::keys::kIOHIDOptionsTypeNone;
 use io_kit_sys::hid::manager::*;
-use crate::{ensure, HidError, HidResult};
+
 use crate::backend::iohidmanager::device::IOHIDDevice;
+use crate::{ensure, HidError, HidResult};
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -32,7 +34,6 @@ impl IOHIDManager {
         let num_devices = devices.len();
         let mut device_refs: Vec<IOHIDDeviceRef> = vec![null_mut(); num_devices];
         unsafe { CFSetGetValues(devices.as_concrete_TypeRef(), device_refs.as_mut_ptr() as *mut _) };
-
 
         let device_list = device_refs
             .into_iter()

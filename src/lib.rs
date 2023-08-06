@@ -44,7 +44,7 @@ impl DeviceInfo {
         Ok(Device {
             inner: dev,
             info: self.clone(),
-            mode,
+            mode
         })
     }
 
