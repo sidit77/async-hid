@@ -64,6 +64,7 @@ impl<T: Into<ErrorSource>> From<T> for HidError {
     }
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! ensure {
     ($cond:expr, $result:expr) => {
