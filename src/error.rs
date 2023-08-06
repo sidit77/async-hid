@@ -41,7 +41,7 @@ impl HidError {
 
 impl Debug for HidError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HidError: {:?}\n   at {}", self.source, self.location)
+        write!(f, "HidError: {:?}\n\tat {}", self.source, self.location)
     }
 }
 

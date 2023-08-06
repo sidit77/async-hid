@@ -1,7 +1,10 @@
+use simple_logger::SimpleLogger;
 use async_hid::{DeviceInfo, HidResult};
 
 #[tokio::main]
 async fn main() -> HidResult<()> {
+    SimpleLogger::new().init().unwrap();
+
     for device in DeviceInfo::enumerate().await? {
         println!(
             "{}: 0x{:X} 0x{:X} 0x{:X} 0x{:X}",
