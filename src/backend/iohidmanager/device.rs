@@ -151,12 +151,14 @@ pub struct CallbackGuard {
 
 impl Drop for CallbackGuard {
     fn drop(&mut self) {
+        // Until io_kit_sys is fixed this seems to be the only way
+        #[warn(clippy::transmute_null_to_fn)]
         unsafe {
             IOHIDDeviceRegisterInputReportCallback(
                 self.device.as_concrete_TypeRef(),
                 null_mut(),
                 0,
-                transmute(null::<()>()), //Potentially UB
+                transmute(null::<()>()),
                 null_mut(),
             )
         }

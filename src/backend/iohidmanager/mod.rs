@@ -14,7 +14,7 @@ use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
 use core_foundation::string::CFString;
 use io_kit_sys::hid::keys::*;
 use io_kit_sys::types::IOOptionBits;
-use crate::{AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
+use crate::{AccessMode, DeviceInfo, ensure, ErrorSource, HidError, HidResult};
 use crate::backend::iohidmanager::device::{CallbackGuard, IOHIDDevice};
 use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::iohidmanager::runloop::RunLoop;
@@ -125,6 +125,7 @@ pub async fn open(id: &BackendDeviceId, _mode: AccessMode) -> HidResult<BackendD
 
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+        ensure!(!buf.is_empty(), HidError::zero_sized_data());
         let bytes = self
             .read_channel
             .recv()
