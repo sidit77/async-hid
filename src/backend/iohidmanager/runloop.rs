@@ -1,10 +1,12 @@
 use std::ffi::c_void;
 use std::fmt::{Debug, Formatter};
 use std::ptr::null_mut;
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use async_channel::{bounded, Sender, TryRecvError, unbounded};
+use async_lock::Mutex;
 use core_foundation::base::{kCFAllocatorDefault, TCFType};
 use core_foundation::runloop::{CFRunLoop, CFRunLoopRunResult, CFRunLoopSource, CFRunLoopSourceContext, CFRunLoopSourceCreate, CFRunLoopSourceSignal, CFRunLoopWakeUp};
 use core_foundation::string::CFString;
@@ -13,6 +15,7 @@ use crate::{HidError, HidResult};
 
 struct LoopSource(CFRunLoopSource, CFRunLoop);
 unsafe impl Send for LoopSource {}
+unsafe impl Sync for LoopSource {}
 
 impl Debug for LoopSource {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -64,10 +67,12 @@ pub struct RunLoop {
 
 impl RunLoop {
 
-    pub async fn new() -> HidResult<Self> {
+    async fn new() -> HidResult<Self> {
         let (sender, receiver) = bounded(1);
 
         let thread = Some(thread::spawn(|| {
+            log::trace!("Creating new run loop");
+
             let run_loop_mode = CFString::new(&format!("ASYNC_HID_{:?}", thread::current().id()));
             let run_loop = CFRunLoop::get_current();
 
@@ -86,7 +91,7 @@ impl RunLoop {
             };
 
             let source = unsafe {
-                let s = CFRunLoopSourceCreate(kCFAllocatorDefault, 0 /* order */, &mut ctx);
+                let s = CFRunLoopSourceCreate(kCFAllocatorDefault, 0 , &mut ctx);
                 CFRunLoopSource::wrap_under_create_rule(s)
             };
             run_loop.add_source(&source, run_loop_mode.as_concrete_TypeRef());
@@ -120,6 +125,8 @@ impl RunLoop {
                     _ => break
                 }
             }
+
+            log::trace!("Stopping run loop");
         }));
 
         let sender = receiver
@@ -143,28 +150,32 @@ impl RunLoop {
         Ok(())
     }
 
+    pub async fn get_run_loop() -> HidResult<Arc<RunLoop>> {
+        let mut lock = CURRENT_RUN_LOOP.lock().await;
+        let current = lock
+            .take()
+            .and_then(|weak| weak.upgrade());
+        let current = match current {
+            None => Arc::new(RunLoop::new().await?),
+            Some(current) => current
+        };
+        *lock = Some(Arc::downgrade(&current));
+        Ok(current)
+    }
+
 }
 
 impl Drop for RunLoop {
     fn drop(&mut self) {
-        self.sender.send(LoopCommand::Stop).unwrap();
+        self.sender.send(LoopCommand::Stop)
+            .unwrap_or_else(|_| log::warn!("Failed to send stop signal to the run loop"));
         if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+            thread
+                .join()
+                .expect("Failed to join run loop thread");
         }
     }
 }
 
-//static CURRENT_RUN_LOOP: Mutex<Option<Weak<RunLoop>>> = Mutex::const_new(None);
-//
-//pub async fn get_run_loop() -> HidResult<Arc<RunLoop>> {
-//    let mut lock = CURRENT_RUN_LOOP.lock().await;
-//    let current = lock
-//        .take()
-//        .and_then(|weak| weak.upgrade());
-//    let current = match current {
-//        None => Arc::new(RunLoop::new().await?),
-//        Some(current) => current
-//    };
-//    *lock = Some(Arc::downgrade(&current));
-//    Ok(current)
-//}
+static CURRENT_RUN_LOOP: Mutex<Option<Weak<RunLoop>>> = Mutex::new(None);
+

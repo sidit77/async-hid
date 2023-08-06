@@ -5,7 +5,7 @@ mod utils;
 mod runloop;
 
 use std::sync::Arc;
-use async_channel::{bounded, Receiver};
+use async_channel::{bounded, Receiver, TrySendError};
 use bytes::{BufMut, Bytes, BytesMut};
 use core_foundation::array::CFArray;
 use core_foundation::base::{TCFType};
@@ -14,7 +14,7 @@ use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
 use core_foundation::string::CFString;
 use io_kit_sys::hid::keys::*;
 use io_kit_sys::types::IOOptionBits;
-use crate::{AccessMode, DeviceInfo, ErrorSource, HidResult};
+use crate::{AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
 use crate::backend::iohidmanager::device::{CallbackGuard, IOHIDDevice};
 use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::iohidmanager::runloop::RunLoop;
@@ -84,10 +84,12 @@ pub struct BackendDevice {
 
 impl Drop for BackendDevice {
     fn drop(&mut self) {
-        self.run_loop.unschedule_device(&self.device).unwrap();
+        self.run_loop.unschedule_device(&self.device)
+            .unwrap_or_else(|_| log::warn!("Failed to unschedule IOHIDDevice from run loop"));
         let default_mode = unsafe { CFString::wrap_under_create_rule(kCFRunLoopDefaultMode) };
         self.device.schedule_with_runloop(&CFRunLoop::get_main(), &default_mode);
-        self.device.close(self.open_options).unwrap();
+        self.device.close(self.open_options)
+            .unwrap_or_else(|err| log::warn!("Failed to close IOHIDDevice\n\t{err:?}"));
     }
 }
 
@@ -99,19 +101,23 @@ pub async fn open(id: &BackendDeviceId, _mode: AccessMode) -> HidResult<BackendD
     let mut byte_buffer = BytesMut::with_capacity(1024);
     let (sender, receiver) = bounded(64);
 
+    let drain = receiver.clone();
     let callback = device.register_input_report_callback(move |report| {
         byte_buffer.put(report);
-        let bytes = byte_buffer.split().freeze();
-        sender.try_send(bytes).unwrap();
-        //println!("{:?}", report)
+        let mut bytes = byte_buffer.split().freeze();
+        while let Err(TrySendError::Full(ret)) = sender.try_send(bytes) {
+            log::trace!("Dropping previous input report because the queue is full");
+            let _ = drain.try_recv();
+            bytes = ret;
+        }
     })?;
-    let run_loop = RunLoop::new().await?;
+    let run_loop = RunLoop::get_run_loop().await?;
     run_loop.schedule_device(&device)?;
 
     Ok(BackendDevice {
         device,
         open_options,
-        run_loop: Arc::new(run_loop),
+        run_loop,
         _callback: callback,
         read_channel: receiver,
     })
@@ -119,7 +125,11 @@ pub async fn open(id: &BackendDeviceId, _mode: AccessMode) -> HidResult<BackendD
 
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        let bytes = self.read_channel.recv().await.unwrap();
+        let bytes = self
+            .read_channel
+            .recv()
+            .await
+            .map_err(|_| HidError::custom("Input report callback got dropped unexpectedly"))?;
         let length = bytes.len().min(buf.len());
         buf[..length].copy_from_slice(&bytes[..length]);
         Ok(length)
