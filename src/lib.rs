@@ -29,7 +29,6 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-
     /// Enumerates all **accessible** HID devices
     ///
     /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
@@ -64,7 +63,6 @@ pub struct Device {
 }
 
 impl Device {
-
     /// Read a input report from this device
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
         debug_assert!(self.mode.readable());
