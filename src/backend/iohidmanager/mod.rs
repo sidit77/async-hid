@@ -29,7 +29,10 @@ pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
         .get_devices()?
         .iter()
         .map(get_device_infos)
-        .filter_map(Result::ok)
+        .filter_map(|r| {
+            r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
+                .ok()
+        })
         .flatten()
         .collect();
 
