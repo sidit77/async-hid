@@ -27,3 +27,18 @@ impl<I: Iterator> Stream for Iter<I> {
         self.iter.size_hint()
     }
 }
+
+
+pub trait TryIterExt<T, E> {
+    fn try_collect_vec(self) -> Result<Vec<T>, E>;
+}
+
+impl<T, E, I: Iterator<Item = Result<T, E>>, > TryIterExt<T, E> for I {
+    fn try_collect_vec(self) -> Result<Vec<T>, E> {
+        let mut result = Vec::with_capacity(self.size_hint().0);
+        for elem in self {
+            result.push(elem?);
+        }
+        Ok(result)
+    }
+}

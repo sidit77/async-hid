@@ -39,13 +39,9 @@ async fn main() -> HidResult<()> {
 | Operating System | Underlying API                                 |
 |------------------|------------------------------------------------|
 | Windows          | WinRT (`Windows.Devices.HumanInterfaceDevice`) |
-| Linux            | udev + hidraw                                  |
+| Linux            | hidraw                                         |
 | MacOs            | IOHIDManager                                   |
 
-Compiling under Linux requires the dev package of `udev`.
-```shell
-sudo apt install libudev-dev
-```
 
 ## Async
 The amount of asynchronicity that each OS provides varies. The following tables gives a rough overview which calls utilize async under the hood.
