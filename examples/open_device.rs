@@ -1,5 +1,6 @@
 use async_hid::{AccessMode, DeviceInfo, HidResult};
 use simple_logger::SimpleLogger;
+use futures_lite::stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> HidResult<()> {
@@ -7,8 +8,8 @@ async fn main() -> HidResult<()> {
 
     let device = DeviceInfo::enumerate()
         .await?
-        .iter()
-        .find(|info| info.matches(0x1, 0x1, 0x46D, 0xC016))
+        .find(|info: &DeviceInfo| info.matches(0x1, 0x1, 0x46D, 0xC016))
+        .await
         //.find(|info| info.matches(0xFF00, 0x1, 0x1038, 0x2206))
         .expect("Could not find device")
         .open(AccessMode::Read)

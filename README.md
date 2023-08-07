@@ -8,24 +8,29 @@ This crate generally offers a simpler and more streamlined api while also suppor
 ## Example
 
 ```rust
+use async_hid::{AccessMode, DeviceInfo, HidResult};
+use simple_logger::SimpleLogger;
+use futures_lite::StreamExt;
+
 #[tokio::main]
 async fn main() -> HidResult<()> {
+    SimpleLogger::new().init().unwrap();
+
     let device = DeviceInfo::enumerate()
         .await?
-        .iter()
-        //Optical Logitech Mouse
-        .find(|info| info.matches(0x1, 0x1, 0x46D, 0xC016))
+        //Steelseries Arctis Nova 7X headset
+        .find(|info: &DeviceInfo | info.matches(0xFFC0, 0x1, 0x1038, 0x2206))
+        .await
         .expect("Could not find device")
-        .open(AccessMode::Read)
+        .open(AccessMode::ReadWrite)
         .await?;
 
+    device.write_output_report(&[0x0, 0xb0]).await?;
     let mut buffer = [0u8; 8];
-    loop {
-        let size = device.read_input_report(&mut buffer).await?;
-        println!("{:?}", &buffer[..size])
-    }
+    let size = device.read_input_report(&mut buffer).await?;
+    println!("{:?}", &buffer[..size]);
+    Ok(())
 }
-
 ```
 
 

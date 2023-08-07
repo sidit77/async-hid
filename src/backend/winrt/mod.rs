@@ -18,7 +18,7 @@ const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
 );
 
-pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
+pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin> {
     //let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
     //    .await?
     //    .into_iter()
@@ -32,7 +32,7 @@ pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
             .await?
             .into_iter()
     )
-    .then(get_device_information)
+    .then(|info| Box::pin(get_device_information(info)))
     .filter_map(|r| {
         r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
             .ok()
@@ -42,10 +42,15 @@ pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
     Ok(devices)
 }
 
+//fn get_device_information_unpin(device: DeviceInformation) -> impl Future<Output = HidResult<DeviceInfo>> + Unpin {
+//
+//}
+
 async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo> {
     let id = device.Id()?;
     let name = device.Name()?.to_string_lossy();
-    let device = HidDevice::FromIdAsync(&id, FileAccessMode::Read)?
+    let device = HidDevice::FromIdAsync(&id, FileAccessMode::Read)?;
+    let device = device
         .await
         .on_null_result(|| HidError::custom(format!("Failed to open {name} (Id: {id})")))?;
     Ok(DeviceInfo {
