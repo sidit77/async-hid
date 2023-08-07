@@ -4,6 +4,8 @@ mod backend;
 mod error;
 
 use std::fmt::{Debug, Formatter};
+use std::future::Future;
+use futures_core::Stream;
 
 pub use error::{ErrorSource, HidError, HidResult};
 
@@ -33,8 +35,8 @@ impl DeviceInfo {
     ///
     /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
     /// Register a `log` compatible logger at `trace` level for more information about the discarded devices.
-    pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
-        backend::enumerate().await
+    pub fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo>>> {
+        backend::enumerate()
     }
 
     /// Opens the associated device in the requested [AccessMode]
@@ -64,15 +66,15 @@ pub struct Device {
 
 impl Device {
     /// Read a input report from this device
-    pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+    pub fn read_input_report<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output=HidResult<usize>> + 'a {
         debug_assert!(self.mode.readable());
-        self.inner.read_input_report(buf).await
+        self.inner.read_input_report(buf)
     }
 
     /// Write an output report to this device
-    pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
+    pub fn write_output_report<'a>(&'a self, buf: &'a [u8]) -> impl Future<Output=HidResult<()>> + 'a {
         debug_assert!(self.mode.writeable());
-        self.inner.write_output_report(buf).await
+        self.inner.write_output_report(buf)
     }
 
     /// Retrieves the [DeviceInfo] associated with this device

@@ -2,7 +2,7 @@ mod utils;
 
 use flume::{Receiver, TrySendError};
 use futures_lite::stream::iter;
-use futures_lite::StreamExt;
+use futures_lite::{Stream, StreamExt};
 use windows::core::HSTRING;
 use windows::h;
 use windows::Devices::Enumeration::DeviceInformation;
@@ -18,7 +18,7 @@ const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
 );
 
-pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
+pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
     //let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
     //    .await?
     //    .into_iter()
@@ -36,9 +36,9 @@ pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
     .filter_map(|r| {
         r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
             .ok()
-    })
-    .collect()
-    .await;
+    });
+    //.collect()
+    //.await;
     Ok(devices)
 }
 
