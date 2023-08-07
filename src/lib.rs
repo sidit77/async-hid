@@ -5,11 +5,11 @@ mod error;
 
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
+
 use futures_core::Stream;
 
-pub use error::{ErrorSource, HidError, HidResult};
-
 use crate::backend::{BackendDevice, BackendDeviceId};
+pub use crate::error::{ErrorSource, HidError, HidResult};
 
 /// A struct containing basic information about a device
 ///
@@ -35,7 +35,7 @@ impl DeviceInfo {
     ///
     /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
     /// Register a `log` compatible logger at `trace` level for more information about the discarded devices.
-    pub fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo>+ Unpin> > {
+    pub fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo> + Unpin>> {
         backend::enumerate()
     }
 
@@ -66,13 +66,13 @@ pub struct Device {
 
 impl Device {
     /// Read a input report from this device
-    pub fn read_input_report<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output=HidResult<usize>> + 'a {
+    pub fn read_input_report<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + 'a {
         debug_assert!(self.mode.readable());
         self.inner.read_input_report(buf)
     }
 
     /// Write an output report to this device
-    pub fn write_output_report<'a>(&'a self, buf: &'a [u8]) -> impl Future<Output=HidResult<()>> + 'a {
+    pub fn write_output_report<'a>(&'a self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + 'a {
         debug_assert!(self.mode.writeable());
         self.inner.write_output_report(buf)
     }

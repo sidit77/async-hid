@@ -21,7 +21,7 @@ use crate::backend::iohidmanager::device::{CallbackGuard, IOHIDDevice};
 use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::iohidmanager::runloop::RunLoop;
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
-use crate::backend::iohidmanager::utils::{CFDictionaryExt, iter};
+use crate::backend::iohidmanager::utils::{iter, CFDictionaryExt};
 use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
 
 pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {

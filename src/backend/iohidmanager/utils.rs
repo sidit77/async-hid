@@ -48,19 +48,14 @@ impl CFDictionaryExt for CFDictionary<CFString> {
     }
 }
 
-
-
-
 pub fn iter<I: IntoIterator>(iter: I) -> Iter<I::IntoIter> {
-    Iter {
-        iter: iter.into_iter(),
-    }
+    Iter { iter: iter.into_iter() }
 }
 
 #[derive(Clone, Debug)]
 #[must_use = "streams do nothing unless polled"]
 pub struct Iter<I> {
-    iter: I,
+    iter: I
 }
 
 impl<I> Unpin for Iter<I> {}

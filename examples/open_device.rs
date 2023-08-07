@@ -1,6 +1,6 @@
 use async_hid::{AccessMode, DeviceInfo, HidResult};
-use simple_logger::SimpleLogger;
 use futures_lite::stream::StreamExt;
+use simple_logger::SimpleLogger;
 
 #[tokio::main]
 async fn main() -> HidResult<()> {

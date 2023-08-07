@@ -2,12 +2,12 @@ mod descriptor;
 mod ioctl;
 mod utils;
 
-use std::fs::{OpenOptions, read_dir, read_to_string};
+use std::fs::{read_dir, read_to_string, OpenOptions};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use futures_core::Stream;
 
+use futures_core::Stream;
 use nix::fcntl::OFlag;
 use nix::unistd::{read, write};
 use tokio::io::unix::AsyncFd;
@@ -15,8 +15,8 @@ use tokio::io::Interest;
 
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
 use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
-use crate::{ensure, DeviceInfo, ErrorSource, HidError, HidResult, AccessMode};
 use crate::backend::hidraw::utils::{iter, TryIterExt};
+use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
 
 pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
     let devices = read_dir("/sys/class/hidraw/")?
@@ -55,7 +55,7 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         product_id,
         vendor_id,
         usage_id: 0,
-        usage_page: 0,
+        usage_page: 0
     };
 
     let results = HidrawReportDescriptor::from_syspath(&path)
@@ -84,14 +84,16 @@ fn mange_dev_name(dev_name: &str) -> HidResult<PathBuf> {
     let path = Path::new(dev_name);
     if path.is_absolute() {
         ensure!(
-            dev_name.strip_prefix("/dev/").is_some_and(|z| !z.is_empty()),
-            HidError::custom("Absolute device paths must start with /dev/"));
+            dev_name
+                .strip_prefix("/dev/")
+                .is_some_and(|z| !z.is_empty()),
+            HidError::custom("Absolute device paths must start with /dev/")
+        );
         Ok(path.to_path_buf())
     } else {
         Ok(Path::new("/dev/").join(path))
     }
 }
-
 
 fn parse_hid_vid_pid(s: &str) -> Option<(u16, u16, u16)> {
     let mut elems = s.split(':').filter_map(|s| u16::from_str_radix(s, 16).ok());
