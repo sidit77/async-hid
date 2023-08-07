@@ -21,7 +21,7 @@ windows = { version = "0.48", features = [
 ]}
 
 [target."cfg(target_os = \"linux\")".dependencies]
-tokio = { version = "1", features = ["net", "rt"] }
+tokio = { version = "1", features = ["net"] }
 udev = "0.7"
 nix = { version = "0.26", features = ["fs"] }
 

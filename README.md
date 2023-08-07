@@ -48,10 +48,8 @@ The amount of asynchronicity that each OS provides varies. The following tables 
 |         | `enumerate` | `open` | `read_input_report` | `write_output_report` |
 |---------|-------------|--------|---------------------|-----------------------|
 | Windows | ✔️          | ✔️     | ✔️                  | ✔️                    |
-| Linux   | ✔️*         | ❌      | ✔️                  | ✔️                    |
+| Linux   | ❌           | ❌      | ✔️                  | ✔️                    |
 | MacOS   | ❌           | ✔️     | ✔️                  |                       |
-
-(*) using  the `tokio` thread pool
 
 Under Linux this crate requires a `tokio` runtime while the Window and MacOS backends are runtime agnostic.
 

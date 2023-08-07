@@ -1,39 +1,54 @@
 mod descriptor;
 mod ioctl;
+mod utils;
 
 use std::fs::OpenOptions;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+use futures_core::Stream;
 
 use nix::fcntl::OFlag;
 use nix::unistd::{read, write};
 use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
-use tokio::task::spawn_blocking;
 use udev::{Device, Enumerator};
 
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
 use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
-use crate::{ensure, DeviceInfo, ErrorSource, HidError, HidResult};
+use crate::{ensure, DeviceInfo, ErrorSource, HidError, HidResult, AccessMode};
+use crate::backend::hidraw::utils::iter;
 
-pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
-    spawn_blocking(enumerate_sync)
-        .await
-        .map_err(|_| HidError::custom("Background task failed"))?
-}
 
-fn enumerate_sync() -> HidResult<Vec<DeviceInfo>> {
+pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
     let mut enumerator = Enumerator::new()?;
     enumerator.match_subsystem("hidraw")?;
-    let devices = enumerator
+    let devices: Vec<Device> = enumerator
         .scan_devices()?
-        .map(get_device_info)
-        .filter_map(Result::ok)
-        .flatten()
         .collect();
-    Ok(devices)
+    let devices = devices
+        .into_iter()
+        .map(get_device_info)
+        .filter_map(|r| {
+            r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
+                .ok()
+        })
+        .flatten();
+    Ok(iter(devices))
 }
+
+
+//fn enumerate_sync() -> HidResult<Vec<DeviceInfo>> {
+//    let mut enumerator = Enumerator::new()?;
+//    enumerator.match_subsystem("hidraw")?;
+//    let devices = enumerator
+//        .scan_devices()?
+//        .map(get_device_info)
+//        .filter_map(Result::ok)
+//        .flatten()
+//        .collect();
+//    Ok(devices)
+//}
 
 fn get_device_info(raw_device: Device) -> HidResult<Vec<DeviceInfo>> {
     let device = raw_device
