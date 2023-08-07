@@ -13,6 +13,7 @@ use core_foundation::base::TCFType;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::CFString;
+use futures_core::Stream;
 use io_kit_sys::hid::keys::*;
 use io_kit_sys::types::IOOptionBits;
 
@@ -20,32 +21,31 @@ use crate::backend::iohidmanager::device::{CallbackGuard, IOHIDDevice};
 use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::iohidmanager::runloop::RunLoop;
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
-use crate::backend::iohidmanager::utils::CFDictionaryExt;
+use crate::backend::iohidmanager::utils::{CFDictionaryExt, iter};
 use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
 
-pub async fn enumerate() -> HidResult<Vec<DeviceInfo>> {
+pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
     let mut manager = IOHIDManager::new()?;
     let devices = manager
         .get_devices()?
-        .iter()
+        .into_iter()
         .map(get_device_infos)
         .filter_map(|r| {
             r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
                 .ok()
         })
-        .flatten()
-        .collect();
+        .flatten();
 
-    Ok(devices)
+    Ok(iter(devices))
 }
 
-fn get_device_infos(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
+fn get_device_infos(device: IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
     let primary_usage_page = device.get_i32_property(kIOHIDPrimaryUsagePageKey)? as u16;
     let primary_usage = device.get_i32_property(kIOHIDPrimaryUsageKey)? as u16;
     let vendor_id = device.get_i32_property(kIOHIDVendorIDKey)? as u16;
     let product_id = device.get_i32_property(kIOHIDProductIDKey)? as u16;
     let name = device.get_string_property(kIOHIDProductKey)?;
-    let id = IOService::try_from(device).and_then(|i| i.get_registry_entry_id())?;
+    let id = IOService::try_from(&device).and_then(|i| i.get_registry_entry_id())?;
 
     let info = DeviceInfo {
         id: id.into(),

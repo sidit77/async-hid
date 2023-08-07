@@ -1,10 +1,13 @@
 use std::ffi::c_char;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use core_foundation::base::{kCFAllocatorDefault, CFType, TCFType};
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::{kCFStringEncodingUTF8, CFString, CFStringCreateWithCString};
 use core_foundation::ConcreteCFType;
+use futures_core::Stream;
 
 use crate::{HidError, HidResult};
 
@@ -42,5 +45,34 @@ impl CFDictionaryExt for CFDictionary<CFString> {
             .find(key.to_string())
             .ok_or(HidError::custom("Couldn't find value in dict"))?;
         Ok(unsafe { CFType::wrap_under_get_rule(*item_ref) })
+    }
+}
+
+
+
+
+pub fn iter<I: IntoIterator>(iter: I) -> Iter<I::IntoIter> {
+    Iter {
+        iter: iter.into_iter(),
+    }
+}
+
+#[derive(Clone, Debug)]
+#[must_use = "streams do nothing unless polled"]
+pub struct Iter<I> {
+    iter: I,
+}
+
+impl<I> Unpin for Iter<I> {}
+
+impl<I: Iterator> Stream for Iter<I> {
+    type Item = I::Item;
+
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Poll::Ready(self.iter.next())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
     }
 }
