@@ -144,8 +144,17 @@ impl BackendDevice {
         Ok(length)
     }
 
-    pub async fn write_output_report(&self, _buf: &[u8]) -> HidResult<()> {
-        unimplemented!()
+    pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
+        ensure!(!buf.is_empty(), HidError::zero_sized_data());
+
+        let report_id = buf[0];
+        let data_to_send = if report_id == 0x0 {
+            &buf[1..]
+        } else {
+            buf
+        };
+
+        self.device.set_report(1, report_id as _, data_to_send)
     }
 }
 

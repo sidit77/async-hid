@@ -1,8 +1,8 @@
+use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::mem::transmute;
 use std::ptr::{null, null_mut};
 use std::slice::from_raw_parts;
-use std::sync::Arc;
 
 use core_foundation::base::{kCFAllocatorDefault, CFIndex, CFRelease, CFType, TCFType};
 use core_foundation::number::CFNumber;
@@ -110,6 +110,14 @@ impl IOHIDDevice {
         }
     }
 
+    pub fn set_report(&self, report_type: IOHIDReportType, report_id: CFIndex, report: &[u8]) -> HidResult<()> {
+        let ret = unsafe {
+            IOHIDDeviceSetReport(self.as_concrete_TypeRef(), report_type, report_id, report.as_ptr(), report.len() as _, )
+        };
+        ensure!(ret == kIOReturnSuccess, HidError::custom(format!("Failed to send report: {}", ret)));
+        Ok(())
+    }
+
     pub fn register_input_report_callback<F>(&self, callback: F) -> HidResult<CallbackGuard>
     where
         F: FnMut(&[u8]) + Send + 'static
@@ -118,14 +126,14 @@ impl IOHIDDevice {
 
         let mut report_buffer = vec![0u8; max_input_report_len].into_boxed_slice();
         let callback: InputReportCallback = Box::new(callback);
-        let callback = Arc::new(callback);
+        let callback = Box::new(UnsafeCell::new(callback));
         unsafe {
             IOHIDDeviceRegisterInputReportCallback(
                 self.as_concrete_TypeRef(),
                 report_buffer.as_mut_ptr(),
                 report_buffer.len() as _,
                 hid_report_callback,
-                Arc::as_ptr(&callback) as _
+                callback.get() as _
             );
         }
         Ok(CallbackGuard {
@@ -142,7 +150,7 @@ type InputReportCallback = Box<dyn FnMut(&[u8]) + Send>;
 pub struct CallbackGuard {
     device: IOHIDDevice,
     _report_buffer: Box<[u8]>,
-    _callback: Arc<InputReportCallback>
+    _callback: Box<UnsafeCell<InputReportCallback>>
 }
 
 impl Drop for CallbackGuard {
