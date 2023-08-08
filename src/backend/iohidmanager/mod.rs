@@ -79,55 +79,87 @@ fn get_device_infos(device: IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
     Ok(results)
 }
 
-pub struct BackendDevice {
-    device: IOHIDDevice,
-    open_options: IOOptionBits,
+struct InputReceiver {
     run_loop: Arc<RunLoop>,
     _callback: CallbackGuard,
     read_channel: Receiver<Bytes>
 }
 
-impl Drop for BackendDevice {
-    fn drop(&mut self) {
+impl InputReceiver {
+    async fn new(device: &IOHIDDevice) -> HidResult<Self> {
+        let mut byte_buffer = BytesMut::with_capacity(1024);
+        let (sender, receiver) = bounded(64);
+
+        let drain = receiver.clone();
+        let callback = device.register_input_report_callback(move |report| {
+            byte_buffer.put(report);
+            let mut bytes = byte_buffer.split().freeze();
+            while let Err(TrySendError::Full(ret)) = sender.try_send(bytes) {
+                log::trace!("Dropping previous input report because the queue is full");
+                let _ = drain.try_recv();
+                bytes = ret;
+            }
+        })?;
+        let run_loop = RunLoop::get_run_loop().await?;
+        run_loop.schedule_device(&device)?;
+
+        Ok(Self {
+            run_loop,
+            _callback: callback,
+            read_channel: receiver,
+        })
+    }
+
+    fn stop(self, device: &IOHIDDevice) {
         self.run_loop
-            .unschedule_device(&self.device)
+            .unschedule_device(device)
             .unwrap_or_else(|_| log::warn!("Failed to unschedule IOHIDDevice from run loop"));
         let default_mode = unsafe { CFString::wrap_under_create_rule(kCFRunLoopDefaultMode) };
-        self.device
-            .schedule_with_runloop(&CFRunLoop::get_main(), &default_mode);
+        device.schedule_with_runloop(&CFRunLoop::get_main(), &default_mode);
+    }
+
+    async fn recv(&self) -> HidResult<Bytes> {
+        self
+            .read_channel
+            .recv()
+            .await
+            .map_err(|_| HidError::custom("Input report callback got dropped unexpectedly"))
+    }
+
+}
+
+pub struct BackendDevice {
+    device: IOHIDDevice,
+    open_options: IOOptionBits,
+    input_receiver: Option<InputReceiver>
+}
+
+impl Drop for BackendDevice {
+    fn drop(&mut self) {
+        if let Some(input) = self.input_receiver.take() {
+            input.stop(&self.device);
+        }
         self.device
             .close(self.open_options)
             .unwrap_or_else(|err| log::warn!("Failed to close IOHIDDevice\n\t{err:?}"));
     }
 }
 
-pub async fn open(id: &BackendDeviceId, _mode: AccessMode) -> HidResult<BackendDevice> {
+pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
     let open_options = 0;
     let device = IOHIDDevice::try_from(*id)?;
     device.open(open_options)?;
 
-    let mut byte_buffer = BytesMut::with_capacity(1024);
-    let (sender, receiver) = bounded(64);
-
-    let drain = receiver.clone();
-    let callback = device.register_input_report_callback(move |report| {
-        byte_buffer.put(report);
-        let mut bytes = byte_buffer.split().freeze();
-        while let Err(TrySendError::Full(ret)) = sender.try_send(bytes) {
-            log::trace!("Dropping previous input report because the queue is full");
-            let _ = drain.try_recv();
-            bytes = ret;
-        }
-    })?;
-    let run_loop = RunLoop::get_run_loop().await?;
-    run_loop.schedule_device(&device)?;
+    let input_receiver = if mode.readable() {
+        Some(InputReceiver::new(&device).await?)
+    } else {
+        None
+    };
 
     Ok(BackendDevice {
         device,
         open_options,
-        run_loop,
-        _callback: callback,
-        read_channel: receiver
+        input_receiver,
     })
 }
 
@@ -135,10 +167,11 @@ impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
         ensure!(!buf.is_empty(), HidError::zero_sized_data());
         let bytes = self
-            .read_channel
+            .input_receiver
+            .as_ref()
+            .expect("InputReceiver not active")
             .recv()
-            .await
-            .map_err(|_| HidError::custom("Input report callback got dropped unexpectedly"))?;
+            .await?;
         let length = bytes.len().min(buf.len());
         buf[..length].copy_from_slice(&bytes[..length]);
         Ok(length)
