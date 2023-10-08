@@ -6,7 +6,7 @@ pub use winrt::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, B
 #[cfg(target_os = "linux")]
 mod hidraw;
 #[cfg(target_os = "linux")]
-pub use hidraw::{enumerate, open, BackendDevice, BackendDeviceId, BackendError};
+pub use hidraw::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
 
 #[cfg(target_os = "macos")]
 mod iohidmanager;

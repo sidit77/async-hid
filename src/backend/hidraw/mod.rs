@@ -55,7 +55,8 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         product_id,
         vendor_id,
         usage_id: 0,
-        usage_page: 0
+        usage_page: 0,
+        private_data: BackendPrivateData { },
     };
 
     let results = HidrawReportDescriptor::from_syspath(&path)
@@ -142,6 +143,10 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
     Ok(BackendDevice { fd: AsyncFd::new(fd)? })
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BackendPrivateData {
+    
+}
 pub type BackendDeviceId = PathBuf;
 pub type BackendError = std::io::Error;
 

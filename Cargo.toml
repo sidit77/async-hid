@@ -34,7 +34,7 @@ windows = { version = "0.51", features = [
 
 [target."cfg(target_os = \"linux\")".dependencies]
 tokio = { version = "1", features = ["net"] }
-nix = { version = "0.26", features = ["fs"] }
+nix = { version = "0.27", features = ["fs", "ioctl"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
 async-lock = "2"
