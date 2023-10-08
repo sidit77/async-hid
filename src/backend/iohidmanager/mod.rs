@@ -53,7 +53,8 @@ fn get_device_infos(device: IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
         product_id,
         vendor_id,
         usage_id: primary_usage,
-        usage_page: primary_usage_page
+        usage_page: primary_usage_page,
+        private_data: BackendPrivateData {},
     };
 
     let mut results = Vec::new();
@@ -189,6 +190,11 @@ impl BackendDevice {
 
         self.device.set_report(1, report_id as _, data_to_send)
     }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BackendPrivateData {
+
 }
 
 pub type BackendDeviceId = RegistryEntryId;

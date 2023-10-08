@@ -41,7 +41,7 @@ async-lock = "2"
 async-channel = "1"
 bytes = "1"
 core-foundation = "0.9"
-io-kit-sys = "0.3"
+io-kit-sys = "0.4"
 mach2 = "0.4"
 
 [dev-dependencies]

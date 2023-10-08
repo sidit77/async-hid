@@ -11,4 +11,4 @@ pub use hidraw::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, 
 #[cfg(target_os = "macos")]
 mod iohidmanager;
 #[cfg(target_os = "macos")]
-pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendError};
+pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
