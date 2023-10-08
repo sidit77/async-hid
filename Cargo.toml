@@ -16,8 +16,8 @@ futures-core = "0.3"
 
 [target."cfg(target_os = \"windows\")".dependencies]
 futures-lite = "1"
-flume = "0.10"
-windows = { version = "0.48", features = [
+flume = "0.11"
+windows = { version = "0.51", features = [
     "Devices_Enumeration",
     "Devices_HumanInterfaceDevice",
     "Foundation",

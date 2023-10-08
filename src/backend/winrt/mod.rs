@@ -4,7 +4,7 @@ use flume::{Receiver, TrySendError};
 use futures_lite::stream::iter;
 use futures_lite::{Stream, StreamExt};
 use windows::core::HSTRING;
-use windows::h;
+use windows::core::h;
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
