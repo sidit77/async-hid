@@ -1,5 +1,7 @@
 mod utils;
+mod win32;
 
+use std::cell::OnceCell;
 use flume::{Receiver, TrySendError};
 use futures_lite::stream::iter;
 use futures_lite::{Stream, StreamExt};
@@ -59,7 +61,8 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceIn
         product_id: device.ProductId()?,
         vendor_id: device.VendorId()?,
         usage_id: device.UsageId()?,
-        usage_page: device.UsagePage()?
+        usage_page: device.UsagePage()?,
+        private_data: BackendPrivateData::default(),
     })
 }
 
@@ -138,7 +141,7 @@ impl BackendDevice {
         let buffer = buffer.as_slice()?;
         ensure!(!buffer.is_empty(), HidError::custom("Input report is empty"));
         let size = buf.len().min(buffer.len());
-        let start = (buffer[0] == 0x0).then_some(1).unwrap_or(0);
+        let start = if buffer[0] == 0x0 { 1 } else { 0 };
         buf[..(size - start)].copy_from_slice(&buffer[start..size]);
 
         Ok(size - start)
@@ -159,6 +162,11 @@ impl BackendDevice {
         self.device.SendOutputReportAsync(&report)?.await?;
         Ok(())
     }
+}
+
+#[derive(Default, Debug, Clone, Eq, PartialEq)]
+pub struct BackendPrivateData {
+    serial_number: OnceCell<Option<String>>
 }
 
 pub type BackendDeviceId = HSTRING;

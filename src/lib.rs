@@ -8,7 +8,7 @@ use std::future::Future;
 
 use futures_core::Stream;
 
-use crate::backend::{BackendDevice, BackendDeviceId};
+use crate::backend::{BackendDevice, BackendDeviceId, BackendPrivateData};
 pub use crate::error::{ErrorSource, HidError, HidResult};
 
 /// A struct containing basic information about a device
@@ -27,7 +27,9 @@ pub struct DeviceInfo {
     /// The HID usage id
     pub usage_id: u16,
     /// The HID usage page
-    pub usage_page: u16
+    pub usage_page: u16,
+
+    pub(crate) private_data: BackendPrivateData
 }
 
 impl DeviceInfo {
@@ -53,6 +55,10 @@ impl DeviceInfo {
     pub fn matches(&self, usage_page: u16, usage_id: u16, vendor_id: u16, product_id: u16) -> bool {
         self.usage_page == usage_page && self.usage_id == usage_id && self.vendor_id == vendor_id && self.product_id == product_id
     }
+}
+
+pub trait SerialNumberExt {
+    fn serial_number(&self) -> Option<&str>;
 }
 
 /// A struct representing an opened device
