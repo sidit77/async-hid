@@ -1,21 +1,23 @@
 use std::mem::size_of;
-use windows::core::{PCWSTR};
+
+use windows::core::PCWSTR;
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_GetSerialNumberString;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
 
-use crate::{DeviceInfo, SerialNumberExt};
 use crate::backend::BackendDeviceId;
 use crate::error::HidResult;
+use crate::{DeviceInfo, SerialNumberExt};
 
 impl SerialNumberExt for DeviceInfo {
     fn serial_number(&self) -> Option<&str> {
-        self
-            .private_data
+        self.private_data
             .serial_number
-            .get_or_init(|| get_serial_number(&self.id.0)
-                .map_err(|err| log::trace!("Failed to query additional information:\n\t{:?}", err))
-                .ok())
+            .get_or_init(|| {
+                get_serial_number(&self.id.0)
+                    .map_err(|err| log::trace!("Failed to query additional information:\n\t{:?}", err))
+                    .ok()
+            })
             .as_ref()
             .map(String::as_str)
     }
@@ -62,10 +64,7 @@ impl Handle {
 impl Drop for Handle {
     fn drop(&mut self) {
         if self.0.is_invalid() {
-            unsafe {
-                CloseHandle(self.0)
-                    .unwrap_or_else(|err| log::debug!("Failed to close handle: {}", err))
-            }
+            unsafe { CloseHandle(self.0).unwrap_or_else(|err| log::debug!("Failed to close handle: {}", err)) }
         }
         self.0 = HANDLE::default();
     }

@@ -111,9 +111,7 @@ impl IOHIDDevice {
     }
 
     pub fn set_report(&self, report_type: IOHIDReportType, report_id: CFIndex, report: &[u8]) -> HidResult<()> {
-        let ret = unsafe {
-            IOHIDDeviceSetReport(self.as_concrete_TypeRef(), report_type, report_id, report.as_ptr(), report.len() as _, )
-        };
+        let ret = unsafe { IOHIDDeviceSetReport(self.as_concrete_TypeRef(), report_type, report_id, report.as_ptr(), report.len() as _) };
         ensure!(ret == kIOReturnSuccess, HidError::custom(format!("Failed to send report: {}", ret)));
         Ok(())
     }

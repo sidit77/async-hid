@@ -2,11 +2,11 @@ mod utils;
 mod win32;
 
 use std::cell::OnceCell;
+
 use flume::{Receiver, TrySendError};
 use futures_lite::stream::iter;
 use futures_lite::{Stream, StreamExt};
-use windows::core::HSTRING;
-use windows::core::h;
+use windows::core::{h, HSTRING};
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
@@ -62,7 +62,7 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceIn
         vendor_id: device.VendorId()?,
         usage_id: device.UsageId()?,
         usage_page: device.UsagePage()?,
-        private_data: BackendPrivateData::default(),
+        private_data: BackendPrivateData::default()
     })
 }
 

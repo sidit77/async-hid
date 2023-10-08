@@ -54,7 +54,7 @@ fn get_device_infos(device: IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
         vendor_id,
         usage_id: primary_usage,
         usage_page: primary_usage_page,
-        private_data: BackendPrivateData {},
+        private_data: BackendPrivateData {}
     };
 
     let mut results = Vec::new();
@@ -107,7 +107,7 @@ impl InputReceiver {
         Ok(Self {
             run_loop,
             _callback: callback,
-            read_channel: receiver,
+            read_channel: receiver
         })
     }
 
@@ -120,13 +120,11 @@ impl InputReceiver {
     }
 
     async fn recv(&self) -> HidResult<Bytes> {
-        self
-            .read_channel
+        self.read_channel
             .recv()
             .await
             .map_err(|_| HidError::custom("Input report callback got dropped unexpectedly"))
     }
-
 }
 
 pub struct BackendDevice {
@@ -160,7 +158,7 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
     Ok(BackendDevice {
         device,
         open_options,
-        input_receiver,
+        input_receiver
     })
 }
 
@@ -182,20 +180,14 @@ impl BackendDevice {
         ensure!(!buf.is_empty(), HidError::zero_sized_data());
 
         let report_id = buf[0];
-        let data_to_send = if report_id == 0x0 {
-            &buf[1..]
-        } else {
-            buf
-        };
+        let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
 
         self.device.set_report(1, report_id as _, data_to_send)
     }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BackendPrivateData {
-
-}
+pub struct BackendPrivateData {}
 
 pub type BackendDeviceId = RegistryEntryId;
 pub type BackendError = ();
