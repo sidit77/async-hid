@@ -2,12 +2,13 @@ mod utils;
 mod win32;
 
 use std::cell::OnceCell;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use flume::{Receiver, TrySendError};
-use futures_lite::stream::iter;
 use futures_lite::{Stream, StreamExt};
 use windows::core::{h, HSTRING};
-use windows::Devices::Enumeration::DeviceInformation;
+use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
 use windows::Storage::FileAccessMode;
@@ -20,7 +21,7 @@ const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
 );
 
-pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin> {
+pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send> {
     //let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
     //    .await?
     //    .into_iter()
@@ -29,20 +30,19 @@ pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin> {
     //    .filter_map(|info| ready(info.ok()))
     //    .collect()
     //    .await;
-    let devices = iter(
-        DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
-            .await?
-            .into_iter()
-    )
-    .then(|info| Box::pin(get_device_information(info)))
-    .filter_map(|r| {
-        r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
-            .ok()
-    });
+    let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
+        .await?;
+    let devices = DeviceInformationSteam::from(devices)
+        .then(|info| Box::pin(get_device_information(info)))
+        .filter_map(|r| {
+            r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
+                .ok()
+        });
     //.collect()
     //.await;
     Ok(devices)
 }
+
 
 //fn get_device_information_unpin(device: DeviceInformation) -> impl Future<Output = HidResult<DeviceInfo>> + Unpin {
 //
@@ -185,5 +185,37 @@ impl From<AccessMode> for FileAccessMode {
             AccessMode::Write => FileAccessMode::ReadWrite,
             AccessMode::ReadWrite => FileAccessMode::ReadWrite
         }
+    }
+}
+
+struct DeviceInformationSteam {
+    devices: DeviceInformationCollection,
+    index: u32
+}
+
+impl From<DeviceInformationCollection> for DeviceInformationSteam {
+    fn from(value: DeviceInformationCollection) -> Self {
+        Self {
+            devices: value,
+            index: 0,
+        }
+    }
+}
+
+impl Stream for DeviceInformationSteam {
+    type Item = DeviceInformation;
+
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let current = self.index;
+        self.index += 1;
+        Poll::Ready(self.devices.GetAt(current).ok())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self
+            .devices
+            .Size()
+            .expect("Failed to get the length of the collection") - self.index) as usize;
+        (remaining, Some(remaining))
     }
 }

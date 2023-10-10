@@ -18,7 +18,7 @@ use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
 use crate::backend::hidraw::utils::{iter, TryIterExt};
 use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
 
-pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
+pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Send + Unpin> {
     let devices = read_dir("/sys/class/hidraw/")?
         .map(|r| r.map(|e| e.path()))
         .try_collect_vec()?;

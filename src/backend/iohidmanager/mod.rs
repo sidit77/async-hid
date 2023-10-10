@@ -24,7 +24,7 @@ use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
 use crate::backend::iohidmanager::utils::{iter, CFDictionaryExt};
 use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
 
-pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo>> {
+pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Send + Unpin> {
     let mut manager = IOHIDManager::new()?;
     let devices = manager
         .get_devices()?
