@@ -1,8 +1,8 @@
 mod utils;
 mod win32;
 
-use std::cell::OnceCell;
 use std::pin::Pin;
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 use flume::{Receiver, TrySendError};
@@ -166,7 +166,7 @@ impl BackendDevice {
 
 #[derive(Default, Debug, Clone, Eq, PartialEq)]
 pub struct BackendPrivateData {
-    serial_number: OnceCell<Option<String>>
+    serial_number: OnceLock<Option<String>>
 }
 
 pub type BackendDeviceId = HSTRING;
