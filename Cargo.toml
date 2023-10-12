@@ -10,6 +10,11 @@ keywords = ["hid", "usb", "async", "wrapper"]
 categories = ["api-bindings", "asynchronous", "hardware-support"]
 edition = "2021"
 
+[features]
+default = ["async-io"]
+tokio = ["dep:tokio"]
+async-io = ["dep:async-io"]
+
 [dependencies]
 log = "0.4"
 futures-core = "0.3"
@@ -33,7 +38,8 @@ windows = { version = "0.51", features = [
 ]}
 
 [target."cfg(target_os = \"linux\")".dependencies]
-tokio = { version = "1", features = ["net"] }
+tokio = { version = "1", features = ["net"], optional = true }
+async-io = { version = "1", optional = true }
 nix = { version = "0.27", features = ["fs", "ioctl"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]

@@ -2,21 +2,17 @@ mod descriptor;
 mod ioctl;
 mod utils;
 
-use std::fs::{read_dir, read_to_string, OpenOptions};
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs::{read_dir, read_to_string};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use futures_core::Stream;
-use nix::fcntl::OFlag;
-use nix::unistd::{read, write};
-use tokio::io::unix::AsyncFd;
-use tokio::io::Interest;
 
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
-use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
 use crate::backend::hidraw::utils::{iter, TryIterExt};
-use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult, SerialNumberExt};
+use crate::{ensure, DeviceInfo, ErrorSource, HidError, HidResult, SerialNumberExt};
+
+pub use device::{BackendDevice, open};
 
 pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Send + Unpin> {
     let devices = read_dir("/sys/class/hidraw/")?
@@ -118,43 +114,114 @@ impl SerialNumberExt for DeviceInfo {
     }
 }
 
-#[derive(Debug)]
-pub struct BackendDevice {
-    fd: AsyncFd<OwnedFd>
-}
+#[cfg(all(feature = "async-io", feature = "tokio"))]
+compile_error!("Only tokio or async-io can be active at the same time");
 
-impl BackendDevice {
-    pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        self.fd
-            .async_io(Interest::READABLE, |fd| read(fd.as_raw_fd(), buf).map_err(BackendError::from))
-            .await
-            .map_err(HidError::from)
+#[cfg(feature = "tokio")]
+mod device {
+    use std::fs::OpenOptions;
+    use std::os::fd::{AsRawFd, OwnedFd};
+    use std::os::unix::fs::OpenOptionsExt;
+    use nix::fcntl::OFlag;
+    use nix::unistd::{read, write};
+    use tokio::io::unix::AsyncFd;
+    use tokio::io::Interest;
+    use crate::backend::{BackendDeviceId, BackendError};
+    use crate::{AccessMode, ensure, HidError, HidResult};
+    use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
+
+    #[derive(Debug)]
+    pub struct BackendDevice {
+        fd: AsyncFd<OwnedFd>
     }
 
-    pub async fn write_output_report(&self, data: &[u8]) -> HidResult<()> {
-        ensure!(!data.is_empty(), HidError::zero_sized_data());
-        self.fd
-            .async_io(Interest::WRITABLE, |fd| write(fd.as_raw_fd(), data).map_err(BackendError::from))
-            .await
-            .map_err(HidError::from)
-            .map(|i| debug_assert_eq!(i, data.len()))
+    impl BackendDevice {
+        pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+            self.fd
+                .async_io(Interest::READABLE, |fd| read(fd.as_raw_fd(), buf).map_err(BackendError::from))
+                .await
+                .map_err(HidError::from)
+        }
+
+        pub async fn write_output_report(&self, data: &[u8]) -> HidResult<()> {
+            ensure!(!data.is_empty(), HidError::zero_sized_data());
+            self.fd
+                .async_io(Interest::WRITABLE, |fd| write(fd.as_raw_fd(), data).map_err(BackendError::from))
+                .await
+                .map_err(HidError::from)
+                .map(|i| debug_assert_eq!(i, data.len()))
+        }
+    }
+
+    pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
+        let fd: OwnedFd = OpenOptions::new()
+            .read(mode.readable())
+            .write(mode.writeable())
+            .custom_flags((OFlag::O_CLOEXEC | OFlag::O_NONBLOCK).bits())
+            .open(id)?
+            .into();
+
+        let mut size = 0i32;
+        unsafe { hidraw_ioc_grdescsize(fd.as_raw_fd(), &mut size) }
+            .map_err(|e| HidError::custom(format!("ioctl(GRDESCSIZE) error for {:?}, not a HIDRAW device?: {}", id, e)))?;
+
+        Ok(BackendDevice { fd: AsyncFd::new(fd)? })
+    }
+
+}
+
+
+#[cfg(feature = "async-io")]
+mod device {
+    use std::fs::OpenOptions;
+    use std::os::fd::{AsRawFd, OwnedFd};
+    use std::os::unix::fs::OpenOptionsExt;
+    use async_io::Async;
+    use nix::fcntl::OFlag;
+    use nix::unistd::{read, write};
+    use crate::backend::{BackendDeviceId, BackendError};
+    use crate::{AccessMode, ensure, HidError, HidResult};
+    use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
+
+    #[derive(Debug)]
+    pub struct BackendDevice {
+        fd: Async<OwnedFd>
+    }
+
+    impl BackendDevice {
+        pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+            self.fd
+                .read_with(|fd| read(fd.as_raw_fd(), buf).map_err(BackendError::from))
+                .await
+                .map_err(HidError::from)
+        }
+
+        pub async fn write_output_report(&self, data: &[u8]) -> HidResult<()> {
+            ensure!(!data.is_empty(), HidError::zero_sized_data());
+            self.fd
+                .write_with(|fd| write(fd.as_raw_fd(), data).map_err(BackendError::from))
+                .await
+                .map_err(HidError::from)
+                .map(|i| debug_assert_eq!(i, data.len()))
+        }
+    }
+
+    pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
+        let fd: OwnedFd = OpenOptions::new()
+            .read(mode.readable())
+            .write(mode.writeable())
+            .custom_flags((OFlag::O_CLOEXEC | OFlag::O_NONBLOCK).bits())
+            .open(id)?
+            .into();
+
+        let mut size = 0i32;
+        unsafe { hidraw_ioc_grdescsize(fd.as_raw_fd(), &mut size) }
+            .map_err(|e| HidError::custom(format!("ioctl(GRDESCSIZE) error for {:?}, not a HIDRAW device?: {}", id, e)))?;
+
+        Ok(BackendDevice { fd: Async::new(fd)? })
     }
 }
 
-pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
-    let fd: OwnedFd = OpenOptions::new()
-        .read(mode.readable())
-        .write(mode.writeable())
-        .custom_flags((OFlag::O_CLOEXEC | OFlag::O_NONBLOCK).bits())
-        .open(id)?
-        .into();
-
-    let mut size = 0i32;
-    unsafe { hidraw_ioc_grdescsize(fd.as_raw_fd(), &mut size) }
-        .map_err(|e| HidError::custom(format!("ioctl(GRDESCSIZE) error for {:?}, not a HIDRAW device?: {}", id, e)))?;
-
-    Ok(BackendDevice { fd: AsyncFd::new(fd)? })
-}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BackendPrivateData {
