@@ -52,7 +52,7 @@ The amount of asynchronicity that each OS provides varies. The following tables 
 | Linux   | ❌           | ❌      | ✔️                  | ✔️                    |
 | MacOS   | ❌           | ✔️     | ✔️                  | ❌                     |
 
-Under Linux this crate requires a `tokio` runtime while the Window and MacOS backends are runtime agnostic.
+Under Linux this crate uses either `async-io` (default) or `tokio` for the async functionality.
 
 ## Planned Features
 - [ ] Reading / Writing feature reports
