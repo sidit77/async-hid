@@ -16,7 +16,7 @@ use tokio::io::Interest;
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
 use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
 use crate::backend::hidraw::utils::{iter, TryIterExt};
-use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
+use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult, SerialNumberExt};
 
 pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Send + Unpin> {
     let devices = read_dir("/sys/class/hidraw/")?
@@ -49,6 +49,10 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         .ok_or(HidError::custom("Can't find hid name"))?
         .to_string();
 
+    let serial_number = read_property(&properties, "HID_UNIQ")
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     let info = DeviceInfo {
         id: id.into(),
         name,
@@ -56,7 +60,7 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         vendor_id,
         usage_id: 0,
         usage_page: 0,
-        private_data: BackendPrivateData {}
+        private_data: BackendPrivateData { serial_number }
     };
 
     let results = HidrawReportDescriptor::from_syspath(&path)
@@ -105,6 +109,15 @@ fn parse_hid_vid_pid(s: &str) -> Option<(u16, u16, u16)> {
     Some((devtype, vendor, product))
 }
 
+impl SerialNumberExt for DeviceInfo {
+    fn serial_number(&self) -> Option<&str> {
+        self.private_data
+            .serial_number
+            .as_ref()
+            .map(String::as_str)
+    }
+}
+
 #[derive(Debug)]
 pub struct BackendDevice {
     fd: AsyncFd<OwnedFd>
@@ -144,7 +157,9 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BackendPrivateData {}
+pub struct BackendPrivateData {
+    serial_number: Option<String>
+}
 pub type BackendDeviceId = PathBuf;
 pub type BackendError = std::io::Error;
 
