@@ -53,4 +53,4 @@ mach2 = "0.4"
 [dev-dependencies]
 simple_logger = "4"
 futures-lite = "1"
-tokio = { version = "1", features = ["full"] }
+pollster = { version = "0.3", features = ["macro"] }

@@ -3,7 +3,7 @@ use futures_lite::stream::StreamExt;
 use log::LevelFilter;
 use simple_logger::SimpleLogger;
 
-#[tokio::main]
+#[pollster::main]
 async fn main() -> HidResult<()> {
     SimpleLogger::new()
         .with_level(LevelFilter::Debug)
