@@ -7,5 +7,24 @@
 </head>
 <body>
     <link data-trunk rel="rust" href="Cargo.toml" data-wasm-opt="z" />
+    Open the dev tool console to see the output!
+    <br>
+    <br>
+    <button id="button" disabled>Run!</button>
+
+    <script type="module">
+        document.addEventListener("wasmload", event => {
+            let start = event.detail.start;
+            let button = document.getElementById("button");
+            button.onclick = async function() {
+                button.disabled = true;
+                await start();
+                button.disabled = false;
+            };
+            button.disabled = false;
+        })
+
+    </script>
+
 </body>
 </html>
