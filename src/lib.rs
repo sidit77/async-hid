@@ -5,6 +5,7 @@ mod error;
 
 use std::fmt::{Debug, Formatter};
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 
 use futures_core::Stream;
 
@@ -14,7 +15,7 @@ pub use crate::error::{ErrorSource, HidError, HidResult};
 /// A struct containing basic information about a device
 ///
 /// This struct can be obtained by calling [DeviceInfo::enumerate] and upgraded into a usable [Device] by calling [DeviceInfo::open].
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DeviceInfo {
     /// OS specific identifier
     pub id: DeviceId,
@@ -29,8 +30,32 @@ pub struct DeviceInfo {
     /// The HID usage page
     pub usage_page: u16,
 
-    pub(crate) private_data: BackendPrivateData
+    pub(crate) private_data: BackendPrivateData,
 }
+
+impl Hash for DeviceInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.name.hash(state);
+        self.product_id.hash(state);
+        self.vendor_id.hash(state);
+        self.usage_id.hash(state);
+        self.usage_page.hash(state);
+    }
+}
+
+impl PartialEq for DeviceInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.name == other.name
+            && self.product_id == other.product_id
+            && self.vendor_id == other.vendor_id
+            && self.usage_id == other.usage_id
+            && self.usage_page == other.usage_page
+    }
+}
+
+impl Eq for DeviceInfo {}
 
 impl DeviceInfo {
     /// Enumerates all **accessible** HID devices
