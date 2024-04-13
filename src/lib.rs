@@ -90,7 +90,7 @@ impl Device {
 }
 
 /// An opaque struct that wraps the OS specific identifier of a device
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Hash, Clone, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct DeviceId(BackendDeviceId);
 

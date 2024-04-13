@@ -1,6 +1,9 @@
 mod utils;
 mod win32;
 
+use std::fmt::Display;
+use std::hash::{Hash, Hasher};
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::OnceLock;
 use std::task::{Context, Poll};
@@ -56,7 +59,7 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceIn
         .await
         .on_null_result(|| HidError::custom(format!("Failed to open {name} (Id: {id})")))?;
     Ok(DeviceInfo {
-        id: id.into(),
+        id: HashableHSTRING(id).into(),
         name,
         product_id: device.ProductId()?,
         vendor_id: device.VendorId()?,
@@ -169,7 +172,40 @@ pub struct BackendPrivateData {
     serial_number: OnceLock<Option<String>>
 }
 
-pub type BackendDeviceId = HSTRING;
+/// Wrapper type for HSTRING to add Hash implementation
+///
+/// windows-rs has a built-in Hash HSTRING implementation after version 0.55.0 (introduced by this PR https://github.com/microsoft/windows-rs/pull/2924/files)
+/// Though, a direct upgrade to the newer windows-rs versions would require further work due to API and functionality changes
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct HashableHSTRING(HSTRING);
+
+impl Display for HashableHSTRING {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Deref for HashableHSTRING {
+    type Target = HSTRING;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for HashableHSTRING {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Hash for HashableHSTRING {
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        self.0.as_wide().hash(hasher)
+    }
+}
+
+pub type BackendDeviceId = HashableHSTRING;
 pub type BackendError = windows::core::Error;
 
 impl From<BackendError> for ErrorSource {
