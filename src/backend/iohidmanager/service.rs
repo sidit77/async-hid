@@ -61,7 +61,7 @@ impl Drop for IOService {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(transparent)]
 pub struct RegistryEntryId(u64);
 
