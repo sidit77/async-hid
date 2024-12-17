@@ -22,7 +22,7 @@ use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::iohidmanager::runloop::RunLoop;
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
 use crate::backend::iohidmanager::utils::{iter, CFDictionaryExt};
-use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult};
+use crate::{ensure, AccessMode, DeviceInfo, ErrorSource, HidError, HidResult, SerialNumberExt};
 
 pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Send + Unpin> {
     let mut manager = IOHIDManager::new()?;
@@ -44,6 +44,7 @@ fn get_device_infos(device: IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
     let primary_usage = device.get_i32_property(kIOHIDPrimaryUsageKey)? as u16;
     let vendor_id = device.get_i32_property(kIOHIDVendorIDKey)? as u16;
     let product_id = device.get_i32_property(kIOHIDProductIDKey)? as u16;
+    let serial_number = device.get_string_property(kIOHIDProductKey).ok();
     let name = device.get_string_property(kIOHIDProductKey)?;
     let id = IOService::try_from(&device).and_then(|i| i.get_registry_entry_id())?;
 
@@ -54,7 +55,9 @@ fn get_device_infos(device: IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
         vendor_id,
         usage_id: primary_usage,
         usage_page: primary_usage_page,
-        private_data: BackendPrivateData {}
+        private_data: BackendPrivateData {
+            serial_number
+        }
     };
 
     let mut results = Vec::new();
@@ -187,7 +190,9 @@ impl BackendDevice {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BackendPrivateData {}
+pub struct BackendPrivateData {
+    serial_number: Option<String>,
+}
 
 pub type BackendDeviceId = RegistryEntryId;
 pub type BackendError = ();
@@ -195,5 +200,14 @@ pub type BackendError = ();
 impl From<BackendError> for ErrorSource {
     fn from(value: BackendError) -> Self {
         ErrorSource::PlatformSpecific(value)
+    }
+}
+
+impl SerialNumberExt for DeviceInfo {
+    fn serial_number(&self) -> Option<&str> {
+        self.private_data
+            .serial_number
+            .as_ref()
+            .map(String::as_str)
     }
 }
