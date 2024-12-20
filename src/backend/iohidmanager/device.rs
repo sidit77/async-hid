@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::mem::transmute;
+use std::mem::{ManuallyDrop, transmute};
 use std::ptr::{null, null_mut};
 use std::slice::from_raw_parts;
 
@@ -117,38 +117,50 @@ impl IOHIDDevice {
     }
 
     pub fn register_input_report_callback<F>(&self, callback: F) -> HidResult<CallbackGuard>
-    where
-        F: FnMut(&[u8]) + Send + 'static
+        where
+            F: FnMut(&[u8]) + Send + Sync + 'static
     {
         let max_input_report_len = self.get_i32_property(kIOHIDMaxInputReportSizeKey)? as usize;
 
-        let mut report_buffer = vec![0u8; max_input_report_len].into_boxed_slice();
+        let mut report_buffer = ManuallyDrop::new(vec![0u8; max_input_report_len]);
+
+        let (report_buffer_ptr, report_buffer_len, report_buffer_capacity) = (report_buffer.as_mut_ptr() as usize, report_buffer.len(), report_buffer.capacity());
+
         let callback: InputReportCallback = Box::new(callback);
-        let callback = Box::new(UnsafeCell::new(callback));
+        let callback: InputReportCallbackContainer = Box::new(UnsafeCell::new(callback));
+
         unsafe {
             IOHIDDeviceRegisterInputReportCallback(
                 self.as_concrete_TypeRef(),
-                report_buffer.as_mut_ptr(),
-                report_buffer.len() as _,
+                report_buffer_ptr as _,
+                report_buffer_len as _,
                 hid_report_callback,
                 callback.get() as _
             );
         }
+
+        let callback_ptr = Box::into_raw(callback) as usize;
+
         Ok(CallbackGuard {
             device: self.clone(),
-            _report_buffer: report_buffer,
-            _callback: callback
+            report_buffer_ptr,
+            report_buffer_len,
+            report_buffer_capacity,
+            callback_ptr,
         })
     }
 }
 
-type InputReportCallback = Box<dyn FnMut(&[u8]) + Send>;
+type InputReportCallback = Box<dyn FnMut(&[u8]) + Send + Sync>;
+type InputReportCallbackContainer = Box<UnsafeCell<InputReportCallback>>;
 
 #[must_use = "The callback will be unregistered when the returned guard is dropped"]
 pub struct CallbackGuard {
     device: IOHIDDevice,
-    _report_buffer: Box<[u8]>,
-    _callback: Box<UnsafeCell<InputReportCallback>>
+    report_buffer_ptr: usize,
+    report_buffer_len: usize,
+    report_buffer_capacity: usize,
+    callback_ptr: usize
 }
 
 impl Drop for CallbackGuard {
@@ -158,6 +170,10 @@ impl Drop for CallbackGuard {
         unsafe {
             IOHIDDeviceRegisterInputReportCallback(self.device.as_concrete_TypeRef(), null_mut(), 0, transmute(null::<()>()), null_mut())
         }
+
+        drop(unsafe { Vec::<u8>::from_raw_parts(self.report_buffer_ptr as _, self.report_buffer_len, self.report_buffer_capacity) });
+
+        drop(unsafe { InputReportCallbackContainer::from_raw(self.callback_ptr as _) });
     }
 }
 
