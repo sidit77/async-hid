@@ -1,7 +1,6 @@
-use std::cell::UnsafeCell;
 use std::ffi::c_void;
-use std::mem::transmute;
-use std::ptr::{null, null_mut};
+use std::mem::ManuallyDrop;
+use std::ptr::null_mut;
 use std::slice::from_raw_parts;
 
 use core_foundation::base::{kCFAllocatorDefault, CFIndex, CFRelease, CFType, TCFType};
@@ -9,8 +8,8 @@ use core_foundation::number::CFNumber;
 use core_foundation::runloop::CFRunLoop;
 use core_foundation::string::CFString;
 use core_foundation::{impl_TCFType, ConcreteCFType};
-use io_kit_sys::hid::base::IOHIDDeviceRef;
-use io_kit_sys::hid::device::*;
+use io_kit_sys::hid::base::{IOHIDDeviceRef, IOHIDReportCallback};
+use io_kit_sys::hid::device::{IOHIDDeviceClose, IOHIDDeviceCreate, IOHIDDeviceGetProperty, IOHIDDeviceGetTypeID, IOHIDDeviceOpen, IOHIDDeviceScheduleWithRunLoop, IOHIDDeviceSetReport, IOHIDDeviceUnscheduleFromRunLoop};
 use io_kit_sys::hid::keys::{kIOHIDMaxInputReportSizeKey, IOHIDReportType};
 use io_kit_sys::ret::{kIOReturnSuccess, IOReturn};
 use io_kit_sys::types::IOOptionBits;
@@ -18,6 +17,11 @@ use io_kit_sys::types::IOOptionBits;
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
 use crate::backend::iohidmanager::utils::Key;
 use crate::{ensure, HidError, HidResult};
+
+extern "C" {
+    // Workaround for https://github.com/jtakakura/io-kit-rs/issues/6
+    fn IOHIDDeviceRegisterInputReportCallback(device: IOHIDDeviceRef, report: *mut u8, report_length: CFIndex, callback: Option<IOHIDReportCallback>, context: *mut c_void);
+}
 
 #[derive(Debug)]
 #[repr(transparent)]
@@ -117,47 +121,64 @@ impl IOHIDDevice {
     }
 
     pub fn register_input_report_callback<F>(&self, callback: F) -> HidResult<CallbackGuard>
-    where
-        F: FnMut(&[u8]) + Send + 'static
+        where
+            F: FnMut(&[u8]) + Send + Sync + 'static
     {
         let max_input_report_len = self.get_i32_property(kIOHIDMaxInputReportSizeKey)? as usize;
 
-        let mut report_buffer = vec![0u8; max_input_report_len].into_boxed_slice();
+        let mut report_buffer = ManuallyDrop::new(vec![0u8; max_input_report_len]);
+
+        let (report_buffer_ptr, report_buffer_len, report_buffer_capacity) = (report_buffer.as_mut_ptr(), report_buffer.len(), report_buffer.capacity());
+
         let callback: InputReportCallback = Box::new(callback);
-        let callback = Box::new(UnsafeCell::new(callback));
+        let callback: InputReportCallbackContainer = Box::new(callback);
+
+        let callback_ptr = Box::into_raw(callback);
+
         unsafe {
             IOHIDDeviceRegisterInputReportCallback(
                 self.as_concrete_TypeRef(),
-                report_buffer.as_mut_ptr(),
-                report_buffer.len() as _,
-                hid_report_callback,
-                callback.get() as _
+                report_buffer_ptr as _,
+                report_buffer_len as _,
+                Some(hid_report_callback),
+                callback_ptr as _,
             );
         }
+
         Ok(CallbackGuard {
             device: self.clone(),
-            _report_buffer: report_buffer,
-            _callback: callback
+            report_buffer_ptr,
+            report_buffer_len,
+            report_buffer_capacity,
+            callback_ptr,
         })
     }
 }
 
-type InputReportCallback = Box<dyn FnMut(&[u8]) + Send>;
+type InputReportCallback = Box<dyn FnMut(&[u8]) + Send + Sync>;
+type InputReportCallbackContainer = Box<InputReportCallback>;
 
 #[must_use = "The callback will be unregistered when the returned guard is dropped"]
 pub struct CallbackGuard {
     device: IOHIDDevice,
-    _report_buffer: Box<[u8]>,
-    _callback: Box<UnsafeCell<InputReportCallback>>
+    report_buffer_ptr: *mut u8,
+    report_buffer_len: usize,
+    report_buffer_capacity: usize,
+    callback_ptr: *mut InputReportCallback,
 }
+
+unsafe impl Send for CallbackGuard {}
+unsafe impl Sync for CallbackGuard {}
 
 impl Drop for CallbackGuard {
     fn drop(&mut self) {
-        // Until io_kit_sys is fixed this seems to be the only way
-        #[warn(clippy::transmute_null_to_fn)]
         unsafe {
-            IOHIDDeviceRegisterInputReportCallback(self.device.as_concrete_TypeRef(), null_mut(), 0, transmute(null::<()>()), null_mut())
+            IOHIDDeviceRegisterInputReportCallback(self.device.as_concrete_TypeRef(), null_mut(), 0, None, null_mut())
         }
+
+        drop(unsafe { Vec::<u8>::from_raw_parts(self.report_buffer_ptr, self.report_buffer_len, self.report_buffer_capacity) });
+
+        drop(unsafe { InputReportCallbackContainer::from_raw(self.callback_ptr) });
     }
 }
 
