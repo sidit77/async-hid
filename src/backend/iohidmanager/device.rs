@@ -1,5 +1,5 @@
 use std::ffi::c_void;
-use std::mem::{ManuallyDrop};
+use std::mem::ManuallyDrop;
 use std::ptr::null_mut;
 use std::slice::from_raw_parts;
 
