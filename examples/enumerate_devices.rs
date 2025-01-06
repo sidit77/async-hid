@@ -6,7 +6,7 @@ use simple_logger::SimpleLogger;
 #[pollster::main]
 async fn main() -> HidResult<()> {
     SimpleLogger::new()
-        .with_level(LevelFilter::Debug)
+        .with_level(LevelFilter::Trace)
         .init()
         .unwrap();
 

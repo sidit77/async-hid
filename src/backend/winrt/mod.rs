@@ -1,16 +1,15 @@
 mod utils;
-mod win32;
+mod device;
 
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 use flume::{Receiver, TrySendError};
 use futures_lite::{Stream, StreamExt};
-use windows::core::{h, HSTRING};
+use windows::core::{h, HSTRING, PCWSTR};
 use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
@@ -18,7 +17,8 @@ use windows::Storage::FileAccessMode;
 
 use crate::backend::winrt::utils::{IBufferExt, WinResultExt};
 use crate::error::{ErrorSource, HidResult};
-use crate::{ensure, AccessMode, DeviceInfo, HidError};
+use crate::{ensure, AccessMode, DeviceInfo, HidError, SerialNumberExt};
+use crate::backend::winrt::device::Device;
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -36,7 +36,7 @@ pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + S
     let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
         .await?;
     let devices = DeviceInformationSteam::from(devices)
-        .then(|info| Box::pin(get_device_information(info)))
+        .map(get_device_information)
         .filter_map(|r| {
             r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
                 .ok()
@@ -46,26 +46,32 @@ pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + S
     Ok(devices)
 }
 
+impl SerialNumberExt for DeviceInfo {
+    fn serial_number(&self) -> Option<&str> {
+        self.private_data
+            .serial_number
+            .as_ref()
+            .map(String::as_str)
+    }
+}
 
-//fn get_device_information_unpin(device: DeviceInformation) -> impl Future<Output = HidResult<DeviceInfo>> + Unpin {
-//
-//}
-
-async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo> {
+fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo> {
     let id = device.Id()?;
     let name = device.Name()?.to_string_lossy();
-    let device = HidDevice::FromIdAsync(&id, FileAccessMode::Read)?;
-    let device = device
-        .await
-        .on_null_result(|| HidError::custom(format!("Failed to open {name} (Id: {id})")))?;
+    let device = Device::open(PCWSTR(id.as_ptr()), None)?;
+    let attribs = device.attributes()?;
+    let caps = device.preparsed_data()?.caps()?;
+    let serial_number = device.serial_number().ok();
     Ok(DeviceInfo {
         id: HashableHSTRING(id).into(),
         name,
-        product_id: device.ProductId()?,
-        vendor_id: device.VendorId()?,
-        usage_id: device.UsageId()?,
-        usage_page: device.UsagePage()?,
-        private_data: BackendPrivateData::default()
+        product_id: attribs.ProductID,
+        vendor_id: attribs.VendorID,
+        usage_id: caps.Usage,
+        usage_page: caps.UsagePage,
+        private_data: BackendPrivateData {
+            serial_number
+        }
     })
 }
 
@@ -167,9 +173,9 @@ impl BackendDevice {
     }
 }
 
-#[derive(Default, Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BackendPrivateData {
-    serial_number: OnceLock<Option<String>>
+    serial_number: Option<String>
 }
 
 /// Wrapper type for HSTRING to add Hash implementation

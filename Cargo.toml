@@ -22,6 +22,7 @@ futures-core = "0.3"
 [target."cfg(target_os = \"windows\")".dependencies]
 futures-lite = "2.5"
 flume = "0.11"
+async-io = { version = "2", optional = true }
 windows = { version = "0.57", features = [
     "Devices_Enumeration",
     "Devices_HumanInterfaceDevice",
@@ -39,7 +40,7 @@ windows = { version = "0.57", features = [
 
 [target."cfg(target_os = \"linux\")".dependencies]
 tokio = { version = "1", features = ["net"], optional = true }
-async-io = { version = "1", optional = true }
+async-io = { version = "2", optional = true }
 nix = { version = "0.27", features = ["fs", "ioctl"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
@@ -51,6 +52,6 @@ io-kit-sys = "0.4"
 mach2 = "0.4"
 
 [dev-dependencies]
-simple_logger = "4"
+simple_logger = "5"
 futures-lite = "1"
 pollster = { version = "0.3", features = ["macro"] }

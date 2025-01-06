@@ -10,6 +10,17 @@ async fn main() -> HidResult<()> {
         .await?
         .find(|info: &DeviceInfo| info.matches(0xFFC0, 0x1, 0x1038, 0x2206))
         .await
+        .inspect(|info| {
+            println!(
+                "{}: 0x{:X} 0x{:X} 0x{:X} 0x{:X} {:?}",
+                info.name,
+                info.usage_page,
+                info.usage_id,
+                info.vendor_id,
+                info.product_id,
+                info.id
+            );
+        })
         .expect("Could not find device")
         .open(AccessMode::ReadWrite)
         .await?;
