@@ -201,9 +201,17 @@ impl BackendDevice {
 
         unsafe { CloseHandle(event)?; }
 
-        let bytes_read = (bytes_read as usize).min(buf.len());
-        buf[..bytes_read].copy_from_slice(&rb[..bytes_read]);
-        Ok(bytes_read)
+        let copy_len;
+        if rb[0] == 0x0 {
+            bytes_read -= 1;
+            copy_len = usize::min(bytes_read as usize, buf.len());
+            buf[..copy_len].copy_from_slice(&rb[1..(1 + copy_len)]);
+        } else {
+            copy_len = usize::min(bytes_read as usize, buf.len());
+            buf[..copy_len].copy_from_slice(&rb[0..copy_len]);
+        }
+
+        Ok(copy_len)
     }
 
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
