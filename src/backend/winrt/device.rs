@@ -30,6 +30,10 @@ impl Device {
         Ok(Device(handle))
     }
 
+    pub fn handle(&self) -> HANDLE {
+        self.0
+    }
+
     pub fn attributes(&self) -> HidResult<HIDD_ATTRIBUTES> {
         let mut attributes = HIDD_ATTRIBUTES::default();
         unsafe {

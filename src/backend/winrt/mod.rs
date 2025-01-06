@@ -1,4 +1,4 @@
-mod utils;
+
 mod device;
 
 use std::fmt::Display;
@@ -7,15 +7,15 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use flume::{Receiver, TrySendError};
 use futures_lite::{Stream, StreamExt};
-use windows::core::{h, HSTRING, PCWSTR};
+use windows::core::{h, HRESULT, HSTRING, PCWSTR};
 use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
-use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
-use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
 use windows::Storage::FileAccessMode;
-
-use crate::backend::winrt::utils::{IBufferExt, WinResultExt};
+use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
+use windows::Win32::Foundation::{CloseHandle, ERROR_IO_PENDING};
+use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResultEx, OVERLAPPED};
+use windows::Win32::System::Threading::{CreateEventW, INFINITE};
 use crate::error::{ErrorSource, HidResult};
 use crate::{ensure, AccessMode, DeviceInfo, HidError, SerialNumberExt};
 use crate::backend::winrt::device::Device;
@@ -75,6 +75,7 @@ fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo> {
     })
 }
 
+/*
 #[derive(Debug, Clone)]
 struct InputReceiver {
     buffer: Receiver<HidInputReport>,
@@ -111,64 +112,155 @@ impl InputReceiver {
     }
 }
 
-#[derive(Debug, Clone)]
+ */
+
+#[derive(Debug)]
 pub struct BackendDevice {
-    device: HidDevice,
-    input: Option<InputReceiver>
+    device: Device,
+    write_buffer_size: usize,
+    read_buffer_size: usize,
 }
 
 impl Drop for BackendDevice {
     fn drop(&mut self) {
-        if let Some(input) = self.input.take() {
-            input
-                .stop(&self.device)
-                .unwrap_or_else(|err| log::warn!("Failed to unregister input report callback\n\t{err:?}"));
-        }
+        //if let Some(input) = self.input.take() {
+        //    input
+        //        .stop(&self.device)
+        //        .unwrap_or_else(|err| log::warn!("Failed to unregister input report callback\n\t{err:?}"));
+        //}
     }
 }
 
 pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
-    let device = HidDevice::FromIdAsync(id, mode.into())?
-        .await
-        .on_null_result(|| HidError::custom(format!("Failed to open {}", id)))?;
-    let input = match mode.readable() {
-        true => Some(InputReceiver::new(&device)?),
-        false => None
-    };
-    Ok(BackendDevice { device, input })
+    let device = Device::open(PCWSTR(id.as_ptr()), Some(mode))?;
+
+    unsafe {
+        HidD_SetNumInputBuffers(device.handle(), 64).ok()?;
+    }
+    let caps = device.preparsed_data()?.caps()?;
+
+    Ok(BackendDevice {
+        device,
+        write_buffer_size: caps.OutputReportByteLength as usize,
+        read_buffer_size: caps.InputReportByteLength as usize,
+    })
 }
 
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        let report = self
-            .input
-            .as_ref()
-            .expect("Reading is disabled")
-            .recv_async()
-            .await;
-        let buffer = report.Data()?;
-        let buffer = buffer.as_slice()?;
-        ensure!(!buffer.is_empty(), HidError::custom("Input report is empty"));
-        let size = buf.len().min(buffer.len());
-        let start = if buffer[0] == 0x0 { 1 } else { 0 };
-        buf[..(size - start)].copy_from_slice(&buffer[start..size]);
+        //let report = self
+        //    .input
+        //    .as_ref()
+        //    .expect("Reading is disabled")
+        //    .recv_async()
+        //    .await;
+        //let buffer = report.Data()?;
+        //let buffer = buffer.as_slice()?;
+        //ensure!(!buffer.is_empty(), HidError::custom("Input report is empty"));
+        //let size = buf.len().min(buffer.len());
+        //let start = if buffer[0] == 0x0 { 1 } else { 0 };
+        //buf[..(size - start)].copy_from_slice(&buffer[start..size]);
 
-        Ok(size - start)
+        //Ok(size - start)
+
+        let mut bytes_read = 0;
+        let mut rb = vec![0u8; self.read_buffer_size];
+
+        //TODO make sure the handle does not leak
+        let event = unsafe { CreateEventW(None, false, false, None)? };
+        let mut overlapped = OVERLAPPED::default();
+        overlapped.hEvent = event;
+
+        let res = unsafe {
+            ReadFile(
+                self.device.handle(),
+                Some(&mut rb),
+                Some(&mut bytes_read),
+                Some(&mut overlapped)
+            )
+        };
+
+        match res {
+            Ok(()) => {},
+            Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
+                unsafe {
+                    GetOverlappedResultEx(
+                        self.device.handle(),
+                        &mut overlapped,
+                        &mut bytes_read,
+                        INFINITE,
+                        false,
+                    )?;
+                }
+            },
+            Err(err) => {
+                unsafe { CancelIoEx(self.device.handle(), Some(&mut overlapped))? };
+                return Err(err.into())
+            }
+        }
+
+        unsafe { CloseHandle(event)?; }
+
+        let bytes_read = (bytes_read as usize).min(buf.len());
+        buf[..bytes_read].copy_from_slice(&rb[..bytes_read]);
+        Ok(bytes_read)
     }
 
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
         ensure!(!buf.is_empty(), HidError::zero_sized_data());
-        let report = self.device.CreateOutputReport()?;
+        let mut wb = vec![0u8; self.write_buffer_size];
 
-        {
-            let mut buffer = report.Data()?;
-            ensure!(buffer.Length()? as usize >= buf.len(), HidError::custom("Output report is too large"));
-            let (buffer, remainder) = buffer.as_mut_slice()?.split_at_mut(buf.len());
-            buffer.copy_from_slice(buf);
-            remainder.fill(0);
+        let data_size = buf.len().min(wb.len());
+        wb.fill(0);
+        wb[..data_size].copy_from_slice(&buf[..data_size]);
+
+        //TODO make sure the handle does not leak
+        let event = unsafe { CreateEventW(None, false, false, None)? };
+        let mut overlapped = OVERLAPPED::default();
+        overlapped.hEvent = event;
+        let res = unsafe {
+            WriteFile(
+                self.device.handle(),
+                Some(&mut wb),
+                None,
+                Some(&mut overlapped)
+            )
+        };
+
+        match res {
+            Ok(()) => {}
+            Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
+                let mut bytes_written = 0;
+                unsafe {
+                    GetOverlappedResultEx(
+                        self.device.handle(),
+                        &mut overlapped,
+                        &mut bytes_written,
+                        INFINITE,
+                        false,
+                    )?;
+                }
+            },
+            Err(err) => return Err(err.into())
         }
 
-        self.device.SendOutputReportAsync(&report)?.await?;
+        unsafe {
+            CloseHandle(event)?;
+        }
+
+
+
+        //let report = self.device.CreateOutputReport()?;
+//
+        //{
+        //    let mut buffer = report.Data()?;
+        //    ensure!(buffer.Length()? as usize >= buf.len(), HidError::custom("Output report is too large"));
+        //    let (buffer, remainder) = buffer.as_mut_slice()?.split_at_mut(buf.len());
+        //    buffer.copy_from_slice(buf);
+        //    remainder.fill(0);
+        //}
+//
+        //self.device.SendOutputReportAsync(&report)?.await?;
         Ok(())
     }
 }
