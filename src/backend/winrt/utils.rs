@@ -1,6 +1,6 @@
 use std::slice::{from_raw_parts, from_raw_parts_mut};
 
-use windows::core::{ComInterface, Error, Result};
+use windows::core::{Interface, Result};
 use windows::Storage::Streams::IBuffer;
 use windows::Win32::System::WinRT::IBufferByteAccess;
 
@@ -37,7 +37,8 @@ impl<T> WinResultExt<T> for Result<T> {
     {
         match self {
             Ok(value) => Ok(value),
-            Err(Error::OK) => Err(func()),
+
+            Err(err) if err.code().is_ok() => Err(func()),
             Err(err) => Err(HidError::from(err))
         }
     }
