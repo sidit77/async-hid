@@ -37,7 +37,7 @@ impl WaitableHandleFuture {
     }
 
     unsafe extern "system" fn callback_func(inner: *mut c_void, _: BOOLEAN) {
-        trace!("Pending wait completed");
+        trace!("Received wait callback");
         let inner = &*(inner as *const WaitableHandleFutureInner);
         inner.complete.store(true, Ordering::SeqCst);
         inner.waker.wake();
@@ -97,6 +97,6 @@ mod test {
     use static_assertions::assert_not_impl_all;
     use crate::backend::winrt::waiter::WaitableHandleFuture;
 
-    assert_not_impl_all!(WaitObject: Unpin);
+    assert_not_impl_all!(WaitableHandleFuture: Unpin);
 
 }

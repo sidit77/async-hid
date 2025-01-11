@@ -1,27 +1,28 @@
 
 mod device;
 mod waiter;
+mod buffer;
 
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures_lite::{Stream, StreamExt};
-use log::trace;
 use windows::core::{h, HRESULT, HSTRING, PCWSTR};
 use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
 use windows::Storage::FileAccessMode;
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::{CloseHandle, ERROR_IO_PENDING};
-use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED};
+use windows::Win32::Storage::FileSystem::{WriteFile};
+use windows::Win32::System::IO::{GetOverlappedResultEx, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE};
 use crate::error::{ErrorSource, HidResult};
 use crate::{ensure, AccessMode, DeviceInfo, HidError, SerialNumberExt};
+use crate::backend::winrt::buffer::{IoBuffer, Readable};
 use crate::backend::winrt::device::Device;
-use crate::backend::winrt::waiter::{wait_for_handle};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -119,112 +120,48 @@ impl InputReceiver {
 
 #[derive(Debug)]
 pub struct BackendDevice {
-    device: Device,
+    device: Arc<Device>,
     //callback: IoCallback,
+    read_buffer: Mutex<IoBuffer<Readable>>,
     write_buffer_size: usize,
-    read_buffer_size: usize,
-}
-
-impl Drop for BackendDevice {
-    fn drop(&mut self) {
-        //if let Some(input) = self.input.take() {
-        //    input
-        //        .stop(&self.device)
-        //        .unwrap_or_else(|err| log::warn!("Failed to unregister input report callback\n\t{err:?}"));
-        //}
-    }
 }
 
 pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
-    let device = Device::open(PCWSTR(id.as_ptr()), Some(mode))?;
+    let device = Arc::new(Device::open(PCWSTR(id.as_ptr()), Some(mode))?);
 
     unsafe {
         HidD_SetNumInputBuffers(device.handle(), 64).ok()?;
     }
     let caps = device.preparsed_data()?.caps()?;
 
+    let read_buffer = Mutex::new(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?);
     //let callback = IoCallback::new(device.handle())?;
     Ok(BackendDevice {
         device,
-        write_buffer_size: caps.OutputReportByteLength as usize,
-        read_buffer_size: caps.InputReportByteLength as usize,
+        read_buffer,
+        write_buffer_size: caps.OutputReportByteLength as usize
     })
 }
 
-
-
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        //let report = self
-        //    .input
-        //    .as_ref()
-        //    .expect("Reading is disabled")
-        //    .recv_async()
-        //    .await;
-        //let buffer = report.Data()?;
-        //let buffer = buffer.as_slice()?;
-        //ensure!(!buffer.is_empty(), HidError::custom("Input report is empty"));
-        //let size = buf.len().min(buffer.len());
-        //let start = if buffer[0] == 0x0 { 1 } else { 0 };
-        //buf[..(size - start)].copy_from_slice(&buffer[start..size]);
+        match self.read_buffer.try_lock() {
+            Ok(mut buffer) => {
+                let mut copy_len = 0;
 
-        //Ok(size - start)
-
-
-        trace!("Starting read operation");
-        let mut bytes_read = 0;
-        let mut rb = vec![0u8; self.read_buffer_size];
-
-        //TODO make sure the handle does not leak
-        let event = unsafe { CreateEventW(None, false, false, None)? };
-        let mut overlapped = Box::new(OVERLAPPED::default());
-        overlapped.hEvent = event;
-
-        //self.callback.start();
-        let res = unsafe {
-            ReadFile(
-                self.device.handle(),
-                Some(&mut rb),
-                Some(&mut bytes_read),
-                Some(overlapped.as_mut() as *mut _)
-            )
-        };
-
-        match res {
-            Ok(()) => {},
-            Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
-                trace!("Waiting for read operation to complete");
-                wait_for_handle(event).await?;
-                trace!("Wait operation completed");
-                unsafe {
-                    GetOverlappedResult(
-                        self.device.handle(),
-                        overlapped.as_mut(),
-                        &mut bytes_read,
-                        false,
-                    )?;
-                }
+                buffer.read(|data| {
+                    if data[0] == 0x0 {
+                        copy_len = usize::min(data.len() - 1, buf.len());
+                        buf[..copy_len].copy_from_slice(&data[1..(1 + copy_len)]);
+                    } else {
+                        copy_len = usize::min(data.len(), buf.len());
+                        buf[..copy_len].copy_from_slice(&data[0..copy_len]);
+                    }
+                }).await?;
+                Ok(copy_len)
             },
-            Err(err) => {
-                //self.callback.cancel();
-                unsafe { CancelIoEx(self.device.handle(), Some(overlapped.as_mut()))? };
-                return Err(err.into())
-            }
+            Err(_) => Err(HidError::custom("Another read operation is in progress"))
         }
-        trace!("Read operation completed");
-        unsafe { CloseHandle(event)?; }
-
-        let copy_len;
-        if rb[0] == 0x0 {
-            bytes_read -= 1;
-            copy_len = usize::min(bytes_read as usize, buf.len());
-            buf[..copy_len].copy_from_slice(&rb[1..(1 + copy_len)]);
-        } else {
-            copy_len = usize::min(bytes_read as usize, buf.len());
-            buf[..copy_len].copy_from_slice(&rb[0..copy_len]);
-        }
-
-        Ok(copy_len)
     }
 
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
