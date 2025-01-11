@@ -1,5 +1,6 @@
 
 mod device;
+mod waiter;
 
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
@@ -8,17 +9,19 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_lite::{Stream, StreamExt};
+use log::trace;
 use windows::core::{h, HRESULT, HSTRING, PCWSTR};
 use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
 use windows::Storage::FileAccessMode;
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::{CloseHandle, ERROR_IO_PENDING};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResultEx, OVERLAPPED};
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED};
 use windows::Win32::System::Threading::{CreateEventW, INFINITE};
 use crate::error::{ErrorSource, HidResult};
 use crate::{ensure, AccessMode, DeviceInfo, HidError, SerialNumberExt};
 use crate::backend::winrt::device::Device;
+use crate::backend::winrt::waiter::{wait_for_handle};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -117,6 +120,7 @@ impl InputReceiver {
 #[derive(Debug)]
 pub struct BackendDevice {
     device: Device,
+    //callback: IoCallback,
     write_buffer_size: usize,
     read_buffer_size: usize,
 }
@@ -139,12 +143,15 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
     }
     let caps = device.preparsed_data()?.caps()?;
 
+    //let callback = IoCallback::new(device.handle())?;
     Ok(BackendDevice {
         device,
         write_buffer_size: caps.OutputReportByteLength as usize,
         read_buffer_size: caps.InputReportByteLength as usize,
     })
 }
+
+
 
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
@@ -163,42 +170,48 @@ impl BackendDevice {
 
         //Ok(size - start)
 
+
+        trace!("Starting read operation");
         let mut bytes_read = 0;
         let mut rb = vec![0u8; self.read_buffer_size];
 
         //TODO make sure the handle does not leak
         let event = unsafe { CreateEventW(None, false, false, None)? };
-        let mut overlapped = OVERLAPPED::default();
+        let mut overlapped = Box::new(OVERLAPPED::default());
         overlapped.hEvent = event;
 
+        //self.callback.start();
         let res = unsafe {
             ReadFile(
                 self.device.handle(),
                 Some(&mut rb),
                 Some(&mut bytes_read),
-                Some(&mut overlapped)
+                Some(overlapped.as_mut() as *mut _)
             )
         };
 
         match res {
             Ok(()) => {},
             Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
+                trace!("Waiting for read operation to complete");
+                wait_for_handle(event).await?;
+                trace!("Wait operation completed");
                 unsafe {
-                    GetOverlappedResultEx(
+                    GetOverlappedResult(
                         self.device.handle(),
-                        &mut overlapped,
+                        overlapped.as_mut(),
                         &mut bytes_read,
-                        INFINITE,
                         false,
                     )?;
                 }
             },
             Err(err) => {
-                unsafe { CancelIoEx(self.device.handle(), Some(&mut overlapped))? };
+                //self.callback.cancel();
+                unsafe { CancelIoEx(self.device.handle(), Some(overlapped.as_mut()))? };
                 return Err(err.into())
             }
         }
-
+        trace!("Read operation completed");
         unsafe { CloseHandle(event)?; }
 
         let copy_len;

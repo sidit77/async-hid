@@ -23,6 +23,7 @@ futures-core = "0.3"
 futures-lite = "2.5"
 flume = "0.11"
 async-io = { version = "2", optional = true }
+atomic-waker = "1.1.2"
 windows = { version = "0.57", features = [
     "Devices_Enumeration",
     "Devices_HumanInterfaceDevice",
@@ -54,6 +55,8 @@ io-kit-sys = "0.4"
 mach2 = "0.4"
 
 [dev-dependencies]
+static_assertions = "1.1"
 simple_logger = "5"
-futures-lite = "1"
-pollster = { version = "0.3", features = ["macro"] }
+futures-lite = "2.5.0"
+pollster = { version = "0.4.0", features = ["macro"] }
+async-io = "2.4.0"
