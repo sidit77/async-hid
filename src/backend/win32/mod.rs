@@ -17,8 +17,8 @@ use windows::Storage::FileAccessMode;
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use crate::error::{ErrorSource, HidResult};
 use crate::{ensure, AccessMode, DeviceInfo, HidError, SerialNumberExt};
-use crate::backend::winrt::buffer::{IoBuffer, Readable, Writable};
-use crate::backend::winrt::device::Device;
+use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
+use crate::backend::win32::device::Device;
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#

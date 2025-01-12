@@ -8,8 +8,8 @@ use windows::Win32::Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PEND
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::CreateEventW;
-use crate::backend::winrt::device::Device;
-use crate::backend::winrt::waiter::WaitableHandleFuture;
+use crate::backend::win32::device::Device;
+use crate::backend::win32::waiter::WaitableHandleFuture;
 use crate::HidResult;
 
 #[derive(Debug)]

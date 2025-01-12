@@ -92,7 +92,7 @@ impl Drop for WaitableHandleFuture {
 #[cfg(test)]
 mod test {
     use static_assertions::assert_not_impl_all;
-    use crate::backend::winrt::waiter::WaitableHandleFuture;
+    use crate::backend::win32::waiter::WaitableHandleFuture;
 
     assert_not_impl_all!(WaitableHandleFuture: Unpin);
 
