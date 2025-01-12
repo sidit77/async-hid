@@ -10,11 +10,8 @@ use windows::Win32::Foundation::{BOOLEAN, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Threading::{RegisterWaitForSingleObject, UnregisterWaitEx, INFINITE, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE};
 use crate::HidResult;
 
-pub async fn wait_for_handle(handle: HANDLE) -> HidResult<()> {
-    WaitableHandleFuture::new(handle).await
-}
 
-struct WaitableHandleFuture {
+pub struct WaitableHandleFuture {
     waitable: HANDLE,
     registration: HANDLE,
     inner: WaitableHandleFutureInner

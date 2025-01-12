@@ -11,17 +11,13 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use futures_lite::{Stream, StreamExt};
-use windows::core::{h, HRESULT, HSTRING, PCWSTR};
+use windows::core::{h, HSTRING, PCWSTR};
 use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
 use windows::Storage::FileAccessMode;
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
-use windows::Win32::Foundation::{CloseHandle, ERROR_IO_PENDING};
-use windows::Win32::Storage::FileSystem::{WriteFile};
-use windows::Win32::System::IO::{GetOverlappedResultEx, OVERLAPPED};
-use windows::Win32::System::Threading::{CreateEventW, INFINITE};
 use crate::error::{ErrorSource, HidResult};
 use crate::{ensure, AccessMode, DeviceInfo, HidError, SerialNumberExt};
-use crate::backend::winrt::buffer::{IoBuffer, Readable};
+use crate::backend::winrt::buffer::{IoBuffer, Readable, Writable};
 use crate::backend::winrt::device::Device;
 
 const DEVICE_SELECTOR: &HSTRING = h!(
@@ -79,51 +75,11 @@ fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo> {
     })
 }
 
-/*
-#[derive(Debug, Clone)]
-struct InputReceiver {
-    buffer: Receiver<HidInputReport>,
-    token: EventRegistrationToken
-}
-
-impl InputReceiver {
-    fn new(device: &HidDevice) -> HidResult<Self> {
-        let (sender, receiver) = flume::bounded(64);
-        let drain = receiver.clone();
-        let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: &Option<HidInputReportReceivedEventArgs>| {
-            if let Some(args) = args {
-                let mut msg = args.Report()?;
-                while let Err(TrySendError::Full(ret)) = sender.try_send(msg) {
-                    log::trace!("Dropping previous input report because the queue is full");
-                    let _ = drain.try_recv();
-                    msg = ret;
-                }
-            }
-            Ok(())
-        }))?;
-        Ok(Self { buffer: receiver, token })
-    }
-
-    async fn recv_async(&self) -> HidInputReport {
-        self.buffer
-            .recv_async()
-            .await
-            .expect("Input report handler got dropped unexpectedly")
-    }
-
-    fn stop(self, device: &HidDevice) -> HidResult<()> {
-        Ok(device.RemoveInputReportReceived(self.token)?)
-    }
-}
-
- */
 
 #[derive(Debug)]
 pub struct BackendDevice {
-    device: Arc<Device>,
-    //callback: IoCallback,
     read_buffer: Mutex<IoBuffer<Readable>>,
-    write_buffer_size: usize,
+    write_buffer: Mutex<IoBuffer<Writable>>,
 }
 
 pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
@@ -135,11 +91,10 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
     let caps = device.preparsed_data()?.caps()?;
 
     let read_buffer = Mutex::new(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?);
-    //let callback = IoCallback::new(device.handle())?;
+    let write_buffer = Mutex::new(IoBuffer::<Writable>::new(device, caps.OutputReportByteLength as usize)?);
     Ok(BackendDevice {
-        device,
         read_buffer,
-        write_buffer_size: caps.OutputReportByteLength as usize
+        write_buffer,
     })
 }
 
@@ -147,18 +102,8 @@ impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
         match self.read_buffer.try_lock() {
             Ok(mut buffer) => {
-                let mut copy_len = 0;
-
-                buffer.read(|data| {
-                    if data[0] == 0x0 {
-                        copy_len = usize::min(data.len() - 1, buf.len());
-                        buf[..copy_len].copy_from_slice(&data[1..(1 + copy_len)]);
-                    } else {
-                        copy_len = usize::min(data.len(), buf.len());
-                        buf[..copy_len].copy_from_slice(&data[0..copy_len]);
-                    }
-                }).await?;
-                Ok(copy_len)
+                let len = buffer.read(buf).await?;
+                Ok(len)
             },
             Err(_) => Err(HidError::custom("Another read operation is in progress"))
         }
@@ -166,60 +111,13 @@ impl BackendDevice {
 
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
         ensure!(!buf.is_empty(), HidError::zero_sized_data());
-        let mut wb = vec![0u8; self.write_buffer_size];
-
-        let data_size = buf.len().min(wb.len());
-        wb.fill(0);
-        wb[..data_size].copy_from_slice(&buf[..data_size]);
-
-        //TODO make sure the handle does not leak
-        let event = unsafe { CreateEventW(None, false, false, None)? };
-        let mut overlapped = OVERLAPPED::default();
-        overlapped.hEvent = event;
-        let res = unsafe {
-            WriteFile(
-                self.device.handle(),
-                Some(&mut wb),
-                None,
-                Some(&mut overlapped)
-            )
-        };
-
-        match res {
-            Ok(()) => {}
-            Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
-                let mut bytes_written = 0;
-                unsafe {
-                    GetOverlappedResultEx(
-                        self.device.handle(),
-                        &mut overlapped,
-                        &mut bytes_written,
-                        INFINITE,
-                        false,
-                    )?;
-                }
+        match self.write_buffer.try_lock() {
+            Ok(mut buffer) => {
+                buffer.write(buf).await?;
+                Ok(())
             },
-            Err(err) => return Err(err.into())
+            Err(_) => Err(HidError::custom("Another write operation is in progress"))
         }
-
-        unsafe {
-            CloseHandle(event)?;
-        }
-
-
-
-        //let report = self.device.CreateOutputReport()?;
-//
-        //{
-        //    let mut buffer = report.Data()?;
-        //    ensure!(buffer.Length()? as usize >= buf.len(), HidError::custom("Output report is too large"));
-        //    let (buffer, remainder) = buffer.as_mut_slice()?.split_at_mut(buf.len());
-        //    buffer.copy_from_slice(buf);
-        //    remainder.fill(0);
-        //}
-//
-        //self.device.SendOutputReportAsync(&report)?.await?;
-        Ok(())
     }
 }
 
