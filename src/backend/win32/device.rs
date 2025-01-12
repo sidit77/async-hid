@@ -1,6 +1,7 @@
+use std::ffi::c_void;
 use windows::core::PCWSTR;
-use windows::Win32::Devices::HumanInterfaceDevice::{HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetPreparsedData, HidD_GetSerialNumberString, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, PHIDP_PREPARSED_DATA};
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Devices::HumanInterfaceDevice::{HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, PHIDP_PREPARSED_DATA};
+use windows::Win32::Foundation::{CloseHandle, BOOLEAN, HANDLE};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
 use crate::{AccessMode, HidResult};
 
@@ -46,15 +47,23 @@ impl Device {
         PreparsedData::from_device(self)
     }
 
-    pub fn serial_number(&self) -> HidResult<String> {
+    fn read_string(&self, func: unsafe fn(HANDLE, *mut c_void, u32) -> BOOLEAN) -> HidResult<String> {
         let mut buffer = [0u16; 256];
-        unsafe { HidD_GetSerialNumberString(self.0, buffer.as_mut_ptr() as _, (size_of::<u16>() * buffer.len()) as u32) }.ok()?;
+        unsafe { func(self.0, buffer.as_mut_ptr() as _, (size_of::<u16>() * buffer.len()) as u32) }.ok()?;
         let serial_number = buffer
             .split(|c| *c == 0x0)
             .map(String::from_utf16_lossy)
             .next()
             .expect("Failed to interpret string");
         Ok(serial_number)
+    }
+
+    pub fn serial_number(&self) -> HidResult<String> {
+        self.read_string(HidD_GetSerialNumberString)
+    }
+
+    pub fn name(&self) -> HidResult<String> {
+        self.read_string(HidD_GetProductString)
     }
 
 }
