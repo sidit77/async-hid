@@ -225,6 +225,8 @@ impl Overlapped {
 
 }
 
+unsafe impl Send for Overlapped {}
+
 impl Drop for Overlapped {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0.hEvent).unwrap_or_else(|err| warn!("Failed to close handle: {err}")) };

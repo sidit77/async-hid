@@ -153,3 +153,11 @@ impl AccessMode {
         matches!(self, Self::Write | Self::ReadWrite)
     }
 }
+
+
+#[cfg(test)]
+mod test {
+    use static_assertions::assert_impl_all;
+    use super::*;
+    assert_impl_all!(Device: Send, Sync);
+}
