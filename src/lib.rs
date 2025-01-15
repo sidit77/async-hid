@@ -8,7 +8,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 
 use futures_core::Stream;
-
+use static_assertions::assert_impl_all;
 use crate::backend::{BackendDevice, BackendDeviceId, BackendPrivateData};
 pub use crate::error::{ErrorSource, HidError, HidResult};
 
@@ -97,13 +97,13 @@ pub struct Device {
 
 impl Device {
     /// Read a input report from this device
-    pub fn read_input_report<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + 'a {
+    pub fn read_input_report<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + Send + 'a {
         debug_assert!(self.mode.readable());
         self.inner.read_input_report(buf)
     }
 
     /// Write an output report to this device
-    pub fn write_output_report<'a>(&'a self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + 'a {
+    pub fn write_output_report<'a>(&'a self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a {
         debug_assert!(self.mode.writeable());
         self.inner.write_output_report(buf)
     }
@@ -154,10 +154,5 @@ impl AccessMode {
     }
 }
 
-
-#[cfg(test)]
-mod test {
-    use static_assertions::assert_impl_all;
-    use super::*;
-    assert_impl_all!(Device: Send, Sync);
-}
+assert_impl_all!(Device: Send, Sync);
+assert_impl_all!(DeviceInfo: Send, Sync);

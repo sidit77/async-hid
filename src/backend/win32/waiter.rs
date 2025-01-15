@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use atomic_waker::AtomicWaker;
 use log::trace;
+use static_assertions::assert_not_impl_all;
 use windows::Win32::Foundation::{BOOLEAN, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Threading::{RegisterWaitForSingleObject, UnregisterWaitEx, INFINITE, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE};
 use crate::HidResult;
@@ -41,6 +42,8 @@ impl WaitableHandleFuture {
     }
 
 }
+
+assert_not_impl_all!(WaitableHandleFuture: Unpin);
 
 impl Future for WaitableHandleFuture {
     type Output = HidResult<()>;
@@ -85,15 +88,4 @@ impl Drop for WaitableHandleFuture {
             trace!("Waitable handle ({}) was successfully unregistered from the I/O thread pool", self.waitable.0);
         }
     }
-}
-
-
-
-#[cfg(test)]
-mod test {
-    use static_assertions::assert_not_impl_all;
-    use crate::backend::win32::waiter::WaitableHandleFuture;
-
-    assert_not_impl_all!(WaitableHandleFuture: Unpin);
-
 }

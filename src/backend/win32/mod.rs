@@ -4,8 +4,9 @@ mod waiter;
 mod buffer;
 mod string;
 mod interface;
+mod mutex;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 
 use futures_lite::Stream;
 use futures_lite::stream::iter;
@@ -18,6 +19,7 @@ use crate::{ensure, AccessMode, DeviceId, DeviceInfo, HidError, SerialNumberExt}
 use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use interface::Interface;
+use crate::backend::win32::mutex::SimpleMutex;
 use crate::backend::win32::string::{U16Str, U16String};
 
 pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send> {
@@ -64,8 +66,8 @@ fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
 
 #[derive(Debug)]
 pub struct BackendDevice {
-    read_buffer: Mutex<IoBuffer<Readable>>,
-    write_buffer: Mutex<IoBuffer<Writable>>,
+    read_buffer: SimpleMutex<IoBuffer<Readable>>,
+    write_buffer: SimpleMutex<IoBuffer<Writable>>,
 }
 
 pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
@@ -76,8 +78,8 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
     }
     let caps = device.preparsed_data()?.caps()?;
 
-    let read_buffer = Mutex::new(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?);
-    let write_buffer = Mutex::new(IoBuffer::<Writable>::new(device, caps.OutputReportByteLength as usize)?);
+    let read_buffer = SimpleMutex::new(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?);
+    let write_buffer = SimpleMutex::new(IoBuffer::<Writable>::new(device, caps.OutputReportByteLength as usize)?);
     Ok(BackendDevice {
         read_buffer,
         write_buffer,
@@ -87,22 +89,22 @@ pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDe
 impl BackendDevice {
     pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
         match self.read_buffer.try_lock() {
-            Ok(mut buffer) => {
+            Some(mut buffer) => {
                 let len = buffer.read(buf).await?;
                 Ok(len)
             },
-            Err(_) => Err(HidError::custom("Another read operation is in progress"))
+            None => Err(HidError::custom("Another read operation is in progress"))
         }
     }
 
     pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
         ensure!(!buf.is_empty(), HidError::zero_sized_data());
         match self.write_buffer.try_lock() {
-            Ok(mut buffer) => {
+            Some(mut buffer) => {
                 buffer.write(buf).await?;
                 Ok(())
             },
-            Err(_) => Err(HidError::custom("Another write operation is in progress"))
+            None => Err(HidError::custom("Another write operation is in progress"))
         }
     }
 }
