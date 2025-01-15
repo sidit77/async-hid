@@ -226,6 +226,7 @@ impl Overlapped {
 }
 
 unsafe impl Send for Overlapped {}
+unsafe impl Sync for Overlapped {}
 
 impl Drop for Overlapped {
     fn drop(&mut self) {
