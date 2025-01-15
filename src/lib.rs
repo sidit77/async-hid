@@ -8,7 +8,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 
 use futures_core::Stream;
-
+use static_assertions::assert_impl_all;
 use crate::backend::{BackendDevice, BackendDeviceId, BackendPrivateData};
 pub use crate::error::{ErrorSource, HidError, HidResult};
 
@@ -154,10 +154,5 @@ impl AccessMode {
     }
 }
 
-
-#[cfg(test)]
-mod test {
-    use static_assertions::assert_impl_all;
-    use super::*;
-    assert_impl_all!(Device: Send, Sync);
-}
+assert_impl_all!(Device: Send, Sync);
+assert_impl_all!(DeviceInfo: Send, Sync);
