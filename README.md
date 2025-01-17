@@ -38,21 +38,25 @@ async fn main() -> HidResult<()> {
 
 | Operating System | Underlying API                                 |
 |------------------|------------------------------------------------|
+| Windows          | Win32 (`Windows.Win32.Devices`)                |
 | Windows          | WinRT (`Windows.Devices.HumanInterfaceDevice`) |
 | Linux            | hidraw                                         |
 | MacOs            | IOHIDManager                                   |
+
+Under Windows this crate uses either `win32` (default) or `winrt` feature for backend.
 
 
 ## Async
 The amount of asynchronicity that each OS provides varies. The following tables gives a rough overview which calls utilize async under the hood.
 
-|         | `enumerate` | `open` | `read_input_report` | `write_output_report` |
-|---------|-------------|--------|---------------------|-----------------------|
-| Windows | ✔️          | ✔️     | ✔️                  | ✔️                    |
-| Linux   | ❌           | ❌      | ✔️                  | ✔️                    |
-| MacOS   | ❌           | ✔️     | ✔️                  | ❌                     |
+|                 | `enumerate`  | `open` | `read_input_report` | `write_output_report` |
+|-----------------|--------------|--------|---------------------|-----------------------|
+| Windows (Win32) | ❌️           | ️️ ❌️    | ✔️                  | ✔️                    |
+| Windows (WinRT) | ✔️           | ✔️     | ✔️                  | ✔️                    |
+| Linux           | ❌            | ❌      | ✔️                  | ✔️                    |
+| MacOS           | ❌            | ✔️     | ✔️                  | ❌                     |
 
-Under Linux this crate uses either `async-io` (default) or `tokio` for the async functionality.
+Under Linux this crate uses either `async-io` (default) or `tokio` feature for the async functionality.
 
 ## Planned Features
 - [ ] Reading / Writing feature reports

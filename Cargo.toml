@@ -11,17 +11,21 @@ categories = ["api-bindings", "asynchronous", "hardware-support"]
 edition = "2021"
 
 [features]
-default = ["async-io"]
+default = ["async-io", "win32"]
 tokio = ["dep:tokio"]
 async-io = ["dep:async-io"]
+win32 = ["dep:atomic-waker"]
+winrt = ["dep:flume"]
 
 [dependencies]
 log = "0.4"
 futures-core = "0.3"
+static_assertions = "1.1"
 
 [target."cfg(target_os = \"windows\")".dependencies]
 futures-lite = "2.5"
-flume = "0.11"
+flume = { version = "0.11", optional = true }
+atomic-waker = { version = "1.1.2", optional = true }
 windows = { version = "0.57", features = [
     "Devices_Enumeration",
     "Devices_HumanInterfaceDevice",
@@ -34,12 +38,15 @@ windows = { version = "0.57", features = [
     "Win32_Devices_HumanInterfaceDevice",
     "Win32_Foundation",
     "Win32_Security",
-    "Win32_Storage_FileSystem"
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_Devices_DeviceAndDriverInstallation"
 ]}
 
 [target."cfg(target_os = \"linux\")".dependencies]
 tokio = { version = "1", features = ["net"], optional = true }
-async-io = { version = "1", optional = true }
+async-io = { version = "2", optional = true }
 nix = { version = "0.27", features = ["fs", "ioctl"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
@@ -51,6 +58,8 @@ io-kit-sys = "0.4"
 mach2 = "0.4"
 
 [dev-dependencies]
-simple_logger = "4"
-futures-lite = "1"
-pollster = { version = "0.3", features = ["macro"] }
+simple_logger = "5"
+futures-lite = "2.5.0"
+pollster = { version = "0.4.0", features = ["macro"] }
+async-io = "2.4.0"
+tokio = { version = "1", features = ["full"] }
