@@ -14,8 +14,8 @@ edition = "2021"
 default = ["async-io", "win32"]
 tokio = ["dep:tokio"]
 async-io = ["dep:async-io"]
-win32 = []
-winrt = []
+win32 = ["dep:atomic-waker"]
+winrt = ["dep:flume"]
 
 [dependencies]
 log = "0.4"
@@ -24,8 +24,8 @@ static_assertions = "1.1"
 
 [target."cfg(target_os = \"windows\")".dependencies]
 futures-lite = "2.5"
-flume = "0.11"
-atomic-waker = "1.1.2"
+flume = { version = "0.11", optional = true }
+atomic-waker = { version = "1.1.2", optional = true }
 windows = { version = "0.57", features = [
     "Devices_Enumeration",
     "Devices_HumanInterfaceDevice",
