@@ -11,9 +11,11 @@ categories = ["api-bindings", "asynchronous", "hardware-support"]
 edition = "2021"
 
 [features]
-default = ["async-io"]
+default = ["async-io", "win32"]
 tokio = ["dep:tokio"]
 async-io = ["dep:async-io"]
+win32 = []
+winrt = []
 
 [dependencies]
 log = "0.4"
