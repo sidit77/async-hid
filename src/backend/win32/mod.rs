@@ -6,6 +6,7 @@ mod string;
 mod interface;
 mod mutex;
 
+use std::future::Future;
 use std::sync::{Arc};
 
 use futures_lite::Stream;
@@ -19,33 +20,14 @@ use crate::{ensure, AccessMode, DeviceId, DeviceInfo, HidError, SerialNumberExt}
 use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use interface::Interface;
+use crate::backend::Backend;
 use crate::backend::win32::mutex::SimpleMutex;
 use crate::backend::win32::string::{U16Str, U16String};
-
-pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send> {
-    let devices = Interface::get_interface_list()?
-        .iter()
-        .filter_map(|i| {
-            get_device_information(i)
-                .map_err(|e| log::trace!("Failed to query device information for {i:?}\n\tbecause {e}"))
-                .ok()
-        })
-        .collect::<Vec<_>>();
-    Ok(iter(devices))
-}
-
-impl SerialNumberExt for DeviceInfo {
-    fn serial_number(&self) -> Option<&str> {
-        self.private_data
-            .serial_number
-            .as_ref()
-            .map(String::as_str)
-    }
-}
+use crate::traits::{AsyncHidRead, AsyncHidWrite};
 
 fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
     let id = device.to_owned();
-    let device = Device::open(device.as_ptr(), None)?;
+    let device = Device::open(device.as_ptr(), false, false)?;
     let name = device.name()?;
     let attribs = device.attributes()?;
     let caps = device.preparsed_data()?.caps()?;
@@ -57,68 +39,70 @@ fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
         vendor_id: attribs.VendorID,
         usage_id: caps.Usage,
         usage_page: caps.UsagePage,
-        private_data: BackendPrivateData {
-            serial_number
-        }
+        serial_number
     })
 }
 
+pub struct Win32Backend;
 
-#[derive(Debug)]
-pub struct BackendDevice {
-    read_buffer: SimpleMutex<IoBuffer<Readable>>,
-    write_buffer: SimpleMutex<IoBuffer<Writable>>,
-}
+impl Backend for Win32Backend {
+    type Error = windows::core::Error;
+    type DeviceId = U16String;
+    type Reader = IoBuffer<Readable>;
+    type Writer = IoBuffer<Writable>;
 
-pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
-    let device = Arc::new(Device::open(id.as_ptr(), Some(mode))?);
-
-    unsafe {
-        HidD_SetNumInputBuffers(device.handle(), 64).ok()?;
+    async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send>{
+        let devices = Interface::get_interface_list()?
+            .iter()
+            .filter_map(|i| {
+                get_device_information(i)
+                    .map_err(|e| log::trace!("Failed to query device information for {i:?}\n\tbecause {e}"))
+                    .ok()
+            })
+            .collect::<Vec<_>>();
+        Ok(iter(devices))
     }
-    let caps = device.preparsed_data()?.caps()?;
 
-    let read_buffer = SimpleMutex::new(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?);
-    let write_buffer = SimpleMutex::new(IoBuffer::<Writable>::new(device, caps.OutputReportByteLength as usize)?);
-    Ok(BackendDevice {
-        read_buffer,
-        write_buffer,
-    })
-}
+    async fn open(id: &Self::DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        let device = Arc::new(Device::open(id.as_ptr(), read, write)?);
 
-impl BackendDevice {
-    pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        match self.read_buffer.try_lock() {
-            Some(mut buffer) => {
-                let len = buffer.read(buf).await?;
-                Ok(len)
-            },
-            None => Err(HidError::custom("Another read operation is in progress"))
+        if read {
+            unsafe {
+                HidD_SetNumInputBuffers(device.handle(), 64).ok()?;
+            }
         }
-    }
 
-    pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
-        ensure!(!buf.is_empty(), HidError::zero_sized_data());
-        match self.write_buffer.try_lock() {
-            Some(mut buffer) => {
-                buffer.write(buf).await?;
-                Ok(())
-            },
-            None => Err(HidError::custom("Another write operation is in progress"))
-        }
+        let caps = device.preparsed_data()?.caps()?;
+
+        let read_buffer = match read {
+            true => Some(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?),
+            false => None
+        };
+        let write_buffer = match write {
+            true => Some(IoBuffer::<Writable>::new(device.clone(), caps.OutputReportByteLength as usize)?),
+            false => None
+        };
+        Ok((read_buffer, write_buffer))
+    }
+}
+impl AsyncHidRead for IoBuffer<Readable> {
+
+    #[inline]
+    fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output=HidResult<usize>> + Send + 'a {
+        self.read(buf)
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BackendPrivateData {
-    serial_number: Option<String>
+impl AsyncHidWrite for IoBuffer<Writable> {
+
+    #[inline]
+    fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output=HidResult<()>> + Send + 'a {
+        self.write(buf)
+    }
 }
 
-pub type BackendDeviceId = U16String;
-pub type BackendError = windows::core::Error;
-
-impl From<BackendError> for ErrorSource {
-    fn from(value: BackendError) -> Self {
+impl From<windows::core::Error> for ErrorSource {
+    fn from(value: windows::core::Error) -> Self {
         ErrorSource::PlatformSpecific(value)
     }
 }

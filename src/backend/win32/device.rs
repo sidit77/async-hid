@@ -11,15 +11,15 @@ pub struct Device(HANDLE);
 
 impl Device {
 
-    pub fn open(path: PCWSTR, access_mode: Option<AccessMode>) -> HidResult<Device> {
+    pub fn open(path: PCWSTR, read: bool, write: bool) -> HidResult<Device> {
         let handle = unsafe {
             CreateFileW(
                 path,
-                match access_mode {
-                    Some(AccessMode::Read) => FILE_SHARE_READ,
-                    Some(AccessMode::Write) => FILE_SHARE_WRITE,
-                    Some(AccessMode::ReadWrite) => FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    None => FILE_SHARE_NONE,
+                match (read, write) {
+                    (true, false) => FILE_SHARE_READ,
+                    (false, true) => FILE_SHARE_WRITE,
+                    (true, true) => FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    (false, false) => FILE_SHARE_NONE,
                 }.0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,

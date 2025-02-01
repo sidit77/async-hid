@@ -1,4 +1,4 @@
-use async_hid::{AccessMode, DeviceInfo, HidError, HidResult};
+use async_hid::{DeviceInfo, HidError, HidResult, AsyncHidRead, AsyncHidWrite};
 use futures_lite::StreamExt;
 use simple_logger::SimpleLogger;
 use tokio::spawn;
@@ -8,7 +8,7 @@ async fn main() -> HidResult<()> {
     SimpleLogger::new().init().unwrap();
 
     spawn(async {
-        let device = DeviceInfo::enumerate()
+        let mut device = DeviceInfo::enumerate()
             .await?
             .find(|info: &DeviceInfo| info.matches(0xFFC0, 0x1, 0x1038, 0x2206))
             .await
@@ -24,7 +24,7 @@ async fn main() -> HidResult<()> {
                 );
             })
             .expect("Could not find device")
-            .open(AccessMode::ReadWrite)
+            .open()
             .await?;
 
         device.write_output_report(&[0x0, 0xb0]).await?;
