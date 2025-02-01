@@ -16,7 +16,7 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, C
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
 use crate::error::{ErrorSource, HidResult};
-use crate::{ensure, AccessMode, DeviceId, DeviceInfo, HidError, SerialNumberExt};
+use crate::{ensure, AccessMode, DeviceInfo, HidError, SerialNumberExt};
 use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use interface::Interface;
@@ -33,7 +33,7 @@ fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
     let caps = device.preparsed_data()?.caps()?;
     let serial_number = device.serial_number().ok();
     Ok(DeviceInfo {
-        id: DeviceId::from(id),
+        id,
         name,
         product_id: attribs.ProductID,
         vendor_id: attribs.VendorID,
@@ -101,13 +101,13 @@ impl AsyncHidWrite for IoBuffer<Writable> {
     }
 }
 
-impl From<windows::core::Error> for ErrorSource {
+impl From<windows::core::Error> for ErrorSource<windows::core::Error> {
     fn from(value: windows::core::Error) -> Self {
         ErrorSource::PlatformSpecific(value)
     }
 }
 
-impl From<CONFIGRET> for ErrorSource {
+impl From<CONFIGRET> for ErrorSource<windows::core::Error> {
     fn from(value: CONFIGRET) -> Self {
         const UNKNOWN_ERROR: u32 = 0xFFFF;
         let hresult = match unsafe { CM_MapCrToWin32Err(value, UNKNOWN_ERROR) } {

@@ -1,16 +1,16 @@
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use futures_core::Stream;
-use crate::{backend, Device, DeviceId, HidResult};
-use crate::backend::{Backend, SelectedBackend};
+use crate::{backend, Device, HidResult};
+use crate::backend::{Backend, DefaultBackend};
 
 /// A struct containing basic information about a device
 ///
 /// This struct can be obtained by calling [DeviceInfo::enumerate] and upgraded into a usable [Device] by calling [DeviceInfo::open].
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct DeviceInfo {
+pub struct DeviceInfo<B: Backend = DefaultBackend> {
     /// OS specific identifier
-    pub id: DeviceId,
+    pub id: B::DeviceId,
     /// The human readable name
     pub name: String,
     /// The HID product id assigned to this device
@@ -25,13 +25,13 @@ pub struct DeviceInfo {
     pub serial_number: Option<String>,
 }
 
-impl DeviceInfo {
+impl<B: Backend> DeviceInfo<B> {
     /// Enumerates all **accessible** HID devices
     ///
     /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
     /// Register a `log` compatible logger at `trace` level for more information about the discarded devices.
-    pub fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send>> {
-        SelectedBackend::enumerate()
+    pub fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo<B>> + Unpin + Send>> {
+        B::enumerate()
     }
 
     /// Convenience method for easily finding a specific device

@@ -1,5 +1,6 @@
 use std::fmt::{Debug, Display};
 use std::future::Future;
+use std::hash::Hash;
 use futures_core::Stream;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 
@@ -27,21 +28,16 @@ mod iohidmanager;
 pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
 use crate::{DeviceInfo, HidResult};
 
-pub trait Backend {
+pub trait Backend: Sized {
     type Error: Debug + Display;
-    type DeviceId: Debug;
+    type DeviceId: Debug + PartialEq + Eq + Clone + Hash;
     type Reader: AsyncHidRead;
     type Writer: AsyncHidWrite;
 
-    fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send>> + Send;
+    fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo<Self>> + Unpin + Send>> + Send;
 
     fn open(id: &Self::DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
 
 }
 
-pub type SelectedBackend = win32::Win32Backend;
-
-pub type BackendDeviceId = <SelectedBackend as Backend>::DeviceId;
-pub type BackendError = <SelectedBackend as Backend>::Error;
-pub type BackendReader = <SelectedBackend as Backend>::Reader;
-pub type BackendWriter = <SelectedBackend as Backend>::Writer;
+pub type DefaultBackend = win32::Win32Backend;
