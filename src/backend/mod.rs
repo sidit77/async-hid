@@ -29,10 +29,10 @@ pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendE
 use crate::{DeviceInfo, HidResult};
 
 pub trait Backend: Sized {
-    type Error: Debug + Display;
-    type DeviceId: Debug + PartialEq + Eq + Clone + Hash;
-    type Reader: AsyncHidRead;
-    type Writer: AsyncHidWrite;
+    type Error: Debug + Display + Send + Sync;
+    type DeviceId: Debug + PartialEq + Eq + Clone + Hash + Send + Sync;
+    type Reader: AsyncHidRead + Send + Sync;
+    type Writer: AsyncHidWrite + Send + Sync;
 
     fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo<Self>> + Unpin + Send>> + Send;
 
