@@ -1,25 +1,25 @@
+use crate::backend::DefaultBackend;
+use crate::Backend;
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::panic::Location;
 
-use crate::backend::BackendError;
-
-pub type HidResult<T> = Result<T, HidError>;
+pub type HidResult<T, B: Backend = DefaultBackend> = Result<T, HidError<B>>;
 
 #[derive(Debug)]
-pub enum ErrorSource {
-    PlatformSpecific(BackendError),
+pub enum ErrorSource<E> {
+    PlatformSpecific(E),
     InvalidZeroSizeData,
     Custom(Cow<'static, str>)
 }
 
-pub struct HidError {
+pub struct HidError<B: Backend = DefaultBackend> {
     location: &'static Location<'static>,
-    source: ErrorSource
+    source: ErrorSource<B::Error>
 }
 
-impl HidError {
+impl<B: Backend> HidError<B> {
     #[track_caller]
     pub fn custom(msg: impl Into<Cow<'static, str>>) -> Self {
         Self {
@@ -37,21 +37,21 @@ impl HidError {
     }
 }
 
-impl Debug for HidError {
+impl<B: Backend> Debug for HidError<B> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "HidError: {:?}\n\tat {}", self.source, self.location)
     }
 }
 
-impl Display for HidError {
+impl<B: Backend> Display for HidError<B> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self.source)
     }
 }
 
-impl Error for HidError {}
+impl<B: Backend> Error for HidError<B> {}
 
-impl<T: Into<ErrorSource>> From<T> for HidError {
+impl<B: Backend, T: Into<ErrorSource<B::Error>>> From<T> for HidError<B> {
     #[track_caller]
     fn from(value: T) -> Self {
         Self {
