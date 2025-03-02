@@ -30,7 +30,7 @@ impl<B: Backend> DeviceInfo<B> {
     ///
     /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
     /// Register a `log` compatible logger at `trace` level for more information about the discarded devices.
-    pub fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo<B>> + Unpin + Send>> {
+    pub fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo<B>> + Unpin + Send, B>> {
         B::enumerate()
     }
 
