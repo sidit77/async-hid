@@ -15,7 +15,7 @@ default = ["async-io", "win32"]
 tokio = ["dep:tokio"]
 async-io = ["dep:async-io"]
 win32 = ["dep:atomic-waker"]
-winrt = ["dep:flume"]
+winrt = ["dep:flume", "dep:windows-future"]
 
 [dependencies]
 log = "0.4"
@@ -26,7 +26,8 @@ static_assertions = "1.1"
 futures-lite = "2.5"
 flume = { version = "0.11", optional = true }
 atomic-waker = { version = "1.1.2", optional = true }
-windows = { version = "0.57", features = [
+windows-future = { version = "0.1.1", optional = true }
+windows = { version = "0.60.0", features = [
     "Devices_Enumeration",
     "Devices_HumanInterfaceDevice",
     "Foundation",

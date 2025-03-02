@@ -1,57 +1,64 @@
 mod utils;
-mod win32;
 
-use std::fmt::Display;
-use std::hash::{Hash, Hasher};
-use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 use flume::{Receiver, TrySendError};
 use futures_lite::{Stream, StreamExt};
-use windows::core::{h, HSTRING};
+use windows::core::{h, Ref, HSTRING};
 use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
-use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
+use windows::Foundation::{TypedEventHandler};
 use windows::Storage::FileAccessMode;
 
 use crate::backend::winrt::utils::{IBufferExt, WinResultExt};
 use crate::error::{ErrorSource, HidResult};
-use crate::{ensure, AccessMode, DeviceInfo, HidError};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, Backend, DeviceInfo, HidError};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
 );
 
-pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send> {
-    //let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
-    //    .await?
-    //    .into_iter()
-    //    .map(get_device_information)
-    //    .collect::<FuturesUnordered<_>>()
-    //    .filter_map(|info| ready(info.ok()))
-    //    .collect()
-    //    .await;
-    let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
-        .await?;
-    let devices = DeviceInformationSteam::from(devices)
-        .then(|info| Box::pin(get_device_information(info)))
-        .filter_map(|r| {
-            r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
-                .ok()
-        });
-    //.collect()
-    //.await;
-    Ok(devices)
+
+pub struct WinRtBackend;
+
+impl Backend for WinRtBackend {
+    type Error = windows::core::Error;
+    type DeviceId = HSTRING;
+    type Reader = InputReceiver;
+    type Writer = HidDevice;
+
+    async fn enumerate() -> HidResult<impl Stream<Item=DeviceInfo<Self>> + Unpin + Send>{
+        let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
+            .await?;
+        let devices = DeviceInformationSteam::from(devices)
+            .then(|info| Box::pin(get_device_information(info)))
+            .filter_map(|r| {
+                r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
+                    .ok()
+            });
+
+        Ok(devices)
+    }
+
+    async fn open(id: &Self::DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>), Self> {
+        let mode = match (read, write) {
+            (true, false) => FileAccessMode::Read,
+            (_, true) => FileAccessMode::ReadWrite,
+            (false, false) => panic!("Not supported")
+        };
+        let device = HidDevice::FromIdAsync(id, mode)?
+            .await
+            .on_null_result(|| HidError::custom(format!("Failed to open {}", id)))?;
+        let input = match read {
+            true => Some(InputReceiver::new(device.clone())?),
+            false => None
+        };
+        Ok((input, read.then_some(device)))
+    }
 }
 
-
-//fn get_device_information_unpin(device: DeviceInformation) -> impl Future<Output = HidResult<DeviceInfo>> + Unpin {
-//
-//}
-
-async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo> {
+async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo<WinRtBackend>> {
     let id = device.Id()?;
     let name = device.Name()?.to_string_lossy();
     let device = HidDevice::FromIdAsync(&id, FileAccessMode::Read)?;
@@ -59,28 +66,30 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceIn
         .await
         .on_null_result(|| HidError::custom(format!("Failed to open {name} (Id: {id})")))?;
     Ok(DeviceInfo {
-        id: HashableHSTRING(id).into(),
+        id,
         name,
         product_id: device.ProductId()?,
         vendor_id: device.VendorId()?,
         usage_id: device.UsageId()?,
         usage_page: device.UsagePage()?,
-        private_data: BackendPrivateData::default()
+        // Not supported
+        serial_number: None,
     })
 }
 
 #[derive(Debug, Clone)]
-struct InputReceiver {
+pub struct InputReceiver {
+    device: HidDevice,
     buffer: Receiver<HidInputReport>,
-    token: EventRegistrationToken
+    token: i64
 }
 
 impl InputReceiver {
-    fn new(device: &HidDevice) -> HidResult<Self> {
+    fn new(device: HidDevice) -> HidResult<Self> {
         let (sender, receiver) = flume::bounded(64);
         let drain = receiver.clone();
-        let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: &Option<HidInputReportReceivedEventArgs>| {
-            if let Some(args) = args {
+        let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: Ref<HidInputReportReceivedEventArgs>| {
+            if let Some(args) = args.as_ref() {
                 let mut msg = args.Report()?;
                 while let Err(TrySendError::Full(ret)) = sender.try_send(msg) {
                     log::trace!("Dropping previous input report because the queue is full");
@@ -90,7 +99,7 @@ impl InputReceiver {
             }
             Ok(())
         }))?;
-        Ok(Self { buffer: receiver, token })
+        Ok(Self { device, buffer: receiver, token })
     }
 
     async fn recv_async(&self) -> HidInputReport {
@@ -99,45 +108,20 @@ impl InputReceiver {
             .await
             .expect("Input report handler got dropped unexpectedly")
     }
-
-    fn stop(self, device: &HidDevice) -> HidResult<()> {
-        Ok(device.RemoveInputReportReceived(self.token)?)
-    }
+    
 }
 
-#[derive(Debug, Clone)]
-pub struct BackendDevice {
-    device: HidDevice,
-    input: Option<InputReceiver>
-}
-
-impl Drop for BackendDevice {
+impl Drop for InputReceiver {
     fn drop(&mut self) {
-        if let Some(input) = self.input.take() {
-            input
-                .stop(&self.device)
-                .unwrap_or_else(|err| log::warn!("Failed to unregister input report callback\n\t{err:?}"));
-        }
+        self.device
+            .RemoveInputReportReceived(self.token)
+            .unwrap_or_else(|err| log::warn!("Failed to unregister input report callback\n\t{err:?}"));
     }
 }
 
-pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
-    let device = HidDevice::FromIdAsync(id, mode.into())?
-        .await
-        .on_null_result(|| HidError::custom(format!("Failed to open {}", id)))?;
-    let input = match mode.readable() {
-        true => Some(InputReceiver::new(&device)?),
-        false => None
-    };
-    Ok(BackendDevice { device, input })
-}
-
-impl BackendDevice {
-    pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+impl AsyncHidRead for InputReceiver {
+    async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
         let report = self
-            .input
-            .as_ref()
-            .expect("Reading is disabled")
             .recv_async()
             .await;
         let buffer = report.Data()?;
@@ -149,10 +133,12 @@ impl BackendDevice {
 
         Ok(size - start)
     }
+}
 
-    pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
+impl AsyncHidWrite for HidDevice {
+    async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
         ensure!(!buf.is_empty(), HidError::zero_sized_data());
-        let report = self.device.CreateOutputReport()?;
+        let report = self.CreateOutputReport()?;
 
         {
             let mut buffer = report.Data()?;
@@ -162,67 +148,18 @@ impl BackendDevice {
             remainder.fill(0);
         }
 
-        self.device.SendOutputReportAsync(&report)?.await?;
+        self.SendOutputReportAsync(&report)?.await?;
         Ok(())
     }
 }
 
-#[derive(Default, Debug, Clone, Eq, PartialEq)]
-pub struct BackendPrivateData {
-    serial_number: OnceLock<Option<String>>
-}
 
-/// Wrapper type for HSTRING to add Hash implementation
-///
-/// windows-rs has a built-in Hash HSTRING implementation after version 0.55.0 (introduced by this PR https://github.com/microsoft/windows-rs/pull/2924/files)
-/// Though, a direct upgrade to the newer windows-rs versions would require further work due to API and functionality changes
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct HashableHSTRING(HSTRING);
-
-impl Display for HashableHSTRING {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Deref for HashableHSTRING {
-    type Target = HSTRING;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for HashableHSTRING {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Hash for HashableHSTRING {
-    fn hash<H: Hasher>(&self, hasher: &mut H) {
-        self.0.as_wide().hash(hasher)
-    }
-}
-
-pub type BackendDeviceId = HashableHSTRING;
-pub type BackendError = windows::core::Error;
-
-impl From<BackendError> for ErrorSource {
-    fn from(value: BackendError) -> Self {
+impl From<windows::core::Error> for ErrorSource<windows::core::Error> {
+    fn from(value: windows::core::Error) -> Self {
         ErrorSource::PlatformSpecific(value)
     }
 }
 
-impl From<AccessMode> for FileAccessMode {
-    fn from(value: AccessMode) -> Self {
-        match value {
-            AccessMode::Read => FileAccessMode::Read,
-            AccessMode::Write => FileAccessMode::ReadWrite,
-            AccessMode::ReadWrite => FileAccessMode::ReadWrite
-        }
-    }
-}
 
 struct DeviceInformationSteam {
     devices: DeviceInformationCollection,
