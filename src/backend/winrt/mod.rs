@@ -20,7 +20,6 @@ const DEVICE_SELECTOR: &HSTRING = h!(
 pub struct WinRtBackend;
 
 impl Backend for WinRtBackend {
-    type Error = windows::core::Error;
     type DeviceId = HSTRING;
     type Reader = InputReceiver;
     type Writer = HidDevice;
