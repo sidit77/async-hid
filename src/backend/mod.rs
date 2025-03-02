@@ -29,9 +29,9 @@ pub trait Backend: Sized {
     type Reader: AsyncHidRead + Send + Sync;
     type Writer: AsyncHidWrite + Send + Sync;
 
-    fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo<Self>> + Unpin + Send, Self>> + Send;
+    fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo<Self>> + Unpin + Send>> + Send;
 
-    fn open(id: &Self::DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>), Self>> + Send;
+    fn open(id: &Self::DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
 
 }
 
@@ -40,4 +40,3 @@ pub type DefaultBackend = win32::Win32Backend;
 
 #[cfg(all(target_os = "windows", feature = "winrt", not(feature = "win32")))]
 pub type DefaultBackend = winrt::WinRtBackend;
-

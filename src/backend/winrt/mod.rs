@@ -1,18 +1,15 @@
 mod utils;
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
-
 use flume::{Receiver, TrySendError};
 use futures_lite::{Stream, StreamExt};
 use windows::core::{h, Ref, HSTRING};
-use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
+use windows::Devices::Enumeration::{DeviceInformation};
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{TypedEventHandler};
 use windows::Storage::FileAccessMode;
 
-use crate::backend::winrt::utils::{IBufferExt, WinResultExt};
-use crate::error::{ErrorSource, HidResult};
+use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResultExt};
+use crate::error::{HidResult};
 use crate::{ensure, AsyncHidRead, AsyncHidWrite, Backend, DeviceInfo, HidError};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
@@ -36,12 +33,13 @@ impl Backend for WinRtBackend {
             .filter_map(|r| {
                 r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
                     .ok()
+                    .flatten()
             });
 
         Ok(devices)
     }
 
-    async fn open(id: &Self::DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>), Self> {
+    async fn open(id: &Self::DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let mode = match (read, write) {
             (true, false) => FileAccessMode::Read,
             (_, true) => FileAccessMode::ReadWrite,
@@ -49,7 +47,8 @@ impl Backend for WinRtBackend {
         };
         let device = HidDevice::FromIdAsync(id, mode)?
             .await
-            .on_null_result(|| HidError::custom(format!("Failed to open {}", id)))?;
+            .extract_null()?
+            .ok_or_else(|| HidError::message(format!("Failed to open {}", id)))?;
         let input = match read {
             true => Some(InputReceiver::new(device.clone())?),
             false => None
@@ -58,14 +57,14 @@ impl Backend for WinRtBackend {
     }
 }
 
-async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceInfo<WinRtBackend>> {
+async fn get_device_information(device: DeviceInformation) -> HidResult<Option<DeviceInfo<WinRtBackend>>> {
     let id = device.Id()?;
     let name = device.Name()?.to_string_lossy();
     let device = HidDevice::FromIdAsync(&id, FileAccessMode::Read)?;
-    let device = device
-        .await
-        .on_null_result(|| HidError::custom(format!("Failed to open {name} (Id: {id})")))?;
-    Ok(DeviceInfo {
+    let Some(device) = device.await.extract_null()? else {
+        return Ok(None);
+    };
+    Ok(Some(DeviceInfo {
         id,
         name,
         product_id: device.ProductId()?,
@@ -74,7 +73,7 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<DeviceIn
         usage_page: device.UsagePage()?,
         // Not supported
         serial_number: None,
-    })
+    }))
 }
 
 #[derive(Debug, Clone)]
@@ -126,7 +125,7 @@ impl AsyncHidRead for InputReceiver {
             .await;
         let buffer = report.Data()?;
         let buffer = buffer.as_slice()?;
-        ensure!(!buffer.is_empty(), HidError::custom("Input report is empty"));
+        ensure!(!buffer.is_empty(), HidError::message("Input report is empty"));
         let size = buf.len().min(buffer.len());
         let start = if buffer[0] == 0x0 { 1 } else { 0 };
         buf[..(size - start)].copy_from_slice(&buffer[start..size]);
@@ -137,12 +136,11 @@ impl AsyncHidRead for InputReceiver {
 
 impl AsyncHidWrite for HidDevice {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
-        ensure!(!buf.is_empty(), HidError::zero_sized_data());
         let report = self.CreateOutputReport()?;
 
         {
             let mut buffer = report.Data()?;
-            ensure!(buffer.Length()? as usize >= buf.len(), HidError::custom("Output report is too large"));
+            ensure!(buffer.Length()? as usize >= buf.len(), HidError::message("Output report is too large"));
             let (buffer, remainder) = buffer.as_mut_slice()?.split_at_mut(buf.len());
             buffer.copy_from_slice(buf);
             remainder.fill(0);
@@ -154,41 +152,3 @@ impl AsyncHidWrite for HidDevice {
 }
 
 
-impl From<windows::core::Error> for ErrorSource<windows::core::Error> {
-    fn from(value: windows::core::Error) -> Self {
-        ErrorSource::PlatformSpecific(value)
-    }
-}
-
-
-struct DeviceInformationSteam {
-    devices: DeviceInformationCollection,
-    index: u32
-}
-
-impl From<DeviceInformationCollection> for DeviceInformationSteam {
-    fn from(value: DeviceInformationCollection) -> Self {
-        Self {
-            devices: value,
-            index: 0,
-        }
-    }
-}
-
-impl Stream for DeviceInformationSteam {
-    type Item = DeviceInformation;
-
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let current = self.index;
-        self.index += 1;
-        Poll::Ready(self.devices.GetAt(current).ok())
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = (self
-            .devices
-            .Size()
-            .expect("Failed to get the length of the collection") - self.index) as usize;
-        (remaining, Some(remaining))
-    }
-}
