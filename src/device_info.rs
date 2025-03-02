@@ -1,8 +1,8 @@
-use std::future::Future;
-use std::hash::{Hash, Hasher};
-use futures_core::Stream;
-use crate::{backend, Device, HidResult};
 use crate::backend::{Backend, DefaultBackend};
+use crate::{HidResult};
+use futures_core::Stream;
+use std::future::Future;
+use std::hash::Hash;
 
 /// A struct containing basic information about a device
 ///

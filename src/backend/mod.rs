@@ -1,3 +1,4 @@
+use crate::{DeviceInfo, HidResult};
 use std::fmt::{Debug, Display};
 use std::future::Future;
 use std::hash::Hash;
@@ -12,8 +13,6 @@ mod winrt;
 #[cfg(all(target_os = "windows", feature = "winrt"))]
 pub use winrt::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
 
-#[cfg(all(feature = "win32", feature = "winrt"))]
-compile_error!("Only win32 or winrt can be active at the same time");
 
 
 #[cfg(target_os = "linux")]
@@ -26,7 +25,7 @@ pub use hidraw::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, 
 mod iohidmanager;
 #[cfg(target_os = "macos")]
 pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
-use crate::{DeviceInfo, HidResult};
+
 
 pub trait Backend: Sized {
     type Error: Debug + Display + Send + Sync;

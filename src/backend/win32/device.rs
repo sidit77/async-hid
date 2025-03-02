@@ -3,7 +3,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Devices::HumanInterfaceDevice::{HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, PHIDP_PREPARSED_DATA};
 use windows::Win32::Foundation::{CloseHandle, BOOLEAN, HANDLE};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
-use crate::{AccessMode, HidResult};
+use crate::{HidResult};
 
 #[derive(Debug, Eq, PartialEq)]
 #[repr(transparent)]
