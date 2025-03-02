@@ -4,7 +4,6 @@ mod waiter;
 mod buffer;
 mod string;
 mod interface;
-mod mutex;
 
 use std::future::Future;
 use std::sync::{Arc};
@@ -16,12 +15,11 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, C
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
 use crate::error::{ErrorSource, HidResult};
-use crate::{ensure, AccessMode, DeviceInfo, HidError, SerialNumberExt};
+use crate::{DeviceInfo};
 use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use interface::Interface;
 use crate::backend::Backend;
-use crate::backend::win32::mutex::SimpleMutex;
 use crate::backend::win32::string::{U16Str, U16String};
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 

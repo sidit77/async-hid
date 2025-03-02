@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::panic::Location;
 
-pub type HidResult<T, B: Backend = DefaultBackend> = Result<T, HidError<B>>;
+pub type HidResult<T, B = DefaultBackend> = Result<T, HidError<B>>;
 
 #[derive(Debug)]
 pub enum ErrorSource<E> {
