@@ -58,4 +58,9 @@ macro_rules! ensure {
             return Err($result);
         }
     };
+    ($cond:expr) => {
+        if !($cond) {
+            return None;
+        }
+    };
 }

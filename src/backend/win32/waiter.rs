@@ -35,7 +35,7 @@ impl HandleWaiter {
         }
     }
 
-    unsafe extern "system" fn callback_func(inner: *mut c_void, _: BOOLEAN) {
+    unsafe extern "system" fn callback_func(inner: *mut c_void, _: bool) {
         trace!("Received wait callback");
         let inner = &*(inner as *const WaitableHandleFutureInner);
         inner.complete.store(true, Ordering::SeqCst);
@@ -45,7 +45,7 @@ impl HandleWaiter {
     fn is_registered(&self) -> bool {
         !self.registration.is_invalid()
     }
-    
+
     fn register(&mut self) -> HidResult<()> {
         assert!(!self.is_registered());
         trace!("Registering waitable handle ({}) with the I/O thread pool", self.waitable.0);
@@ -60,17 +60,17 @@ impl HandleWaiter {
         };
         Ok(())
     }
-    
+
     fn unregister(&mut self) -> HidResult<()> {
         assert!(self.is_registered());
         trace!("Unregistering waitable handle ({}) from the I/O thread pool", self.waitable.0);
         // Calling `UnregisterWaitEx` with `INVALID_HANDLE_VALUE` will cancel the wait and wait for all callbacks functions to complete before returning.
-        unsafe {  UnregisterWaitEx(self.registration, INVALID_HANDLE_VALUE)?; }
+        unsafe {  UnregisterWaitEx(self.registration, None)?; }
         self.registration = INVALID_HANDLE_VALUE;
         trace!("Waitable handle ({}) was successfully unregistered from the I/O thread pool", self.waitable.0);
         Ok(())
     }
-    
+
     fn reset(&mut self) -> HidResult<()> {
         if self.is_registered() {
             warn!("Waiter was not unregistered correctly in the previous call");
@@ -81,14 +81,14 @@ impl HandleWaiter {
         inner.waker.take();
         Ok(())
     }
-    
+
     pub fn wait(&mut self) -> HandleFuture<'_> {
         HandleFuture {
             inner: self,
             state: FutureState::Uninitialized,
         }
     }
-    
+
 }
 
 impl Drop for HandleWaiter {
@@ -142,7 +142,7 @@ impl Drop for HandleFuture<'_> {
     fn drop(&mut self) {
         if self.state == FutureState::Initialized {
             if self.inner.is_registered() {
-               self.inner.unregister().expect("Failed to unregister waitable handle"); 
+               self.inner.unregister().expect("Failed to unregister waitable handle");
             }
         }
     }

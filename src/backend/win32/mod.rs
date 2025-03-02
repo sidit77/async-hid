@@ -14,8 +14,8 @@ use windows::core::{HRESULT};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, CONFIGRET};
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
-use crate::error::{ErrorSource, HidResult};
-use crate::{DeviceInfo};
+use crate::error::{HidResult};
+use crate::{DeviceInfo, HidError};
 use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use interface::Interface;
@@ -29,7 +29,7 @@ fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
     let name = device.name()?;
     let attribs = device.attributes()?;
     let caps = device.preparsed_data()?.caps()?;
-    let serial_number = device.serial_number().ok();
+    let serial_number = device.serial_number();
     Ok(DeviceInfo {
         id,
         name,
@@ -54,7 +54,7 @@ impl Backend for Win32Backend {
             .iter()
             .filter_map(|i| {
                 get_device_information(i)
-                    .map_err(|e| log::trace!("Failed to query device information for {i:?}\n\tbecause {e}"))
+                    .map_err(|e| log::trace!("Failed to query device information for {i:?}: {e}"))
                     .ok()
             })
             .collect::<Vec<_>>();
@@ -65,9 +65,7 @@ impl Backend for Win32Backend {
         let device = Arc::new(Device::open(id.as_ptr(), read, write)?);
 
         if read {
-            unsafe {
-                HidD_SetNumInputBuffers(device.handle(), 64).ok()?;
-            }
+            check_error(unsafe { HidD_SetNumInputBuffers(device.handle(), 64) })?;
         }
 
         let caps = device.preparsed_data()?.caps()?;
@@ -99,19 +97,22 @@ impl AsyncHidWrite for IoBuffer<Writable> {
     }
 }
 
-impl From<windows::core::Error> for ErrorSource<windows::core::Error> {
-    fn from(value: windows::core::Error) -> Self {
-        ErrorSource::PlatformSpecific(value)
+pub fn check_error(result: bool) -> windows::core::Result<()> {
+    if result {
+        Ok(())
+    } else {
+        Err(windows::core::Error::from_win32())
     }
 }
 
-impl From<CONFIGRET> for ErrorSource<windows::core::Error> {
+impl From<CONFIGRET> for HidError {
+    #[track_caller]
     fn from(value: CONFIGRET) -> Self {
         const UNKNOWN_ERROR: u32 = 0xFFFF;
         let hresult = match unsafe { CM_MapCrToWin32Err(value, UNKNOWN_ERROR) } {
             UNKNOWN_ERROR => E_FAIL,
             win32 => HRESULT::from_win32(win32),
         };
-        ErrorSource::PlatformSpecific(windows::core::Error::from(hresult))
+        HidError::from(windows::core::Error::from(hresult))
     }
 }
