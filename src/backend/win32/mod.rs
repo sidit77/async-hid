@@ -44,7 +44,6 @@ fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
 pub struct Win32Backend;
 
 impl Backend for Win32Backend {
-    type Error = windows::core::Error;
     type DeviceId = U16String;
     type Reader = IoBuffer<Readable>;
     type Writer = IoBuffer<Writable>;

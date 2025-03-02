@@ -39,31 +39,3 @@ impl<B: Backend> DeviceInfo<B> {
         self.usage_page == usage_page && self.usage_id == usage_id && self.vendor_id == vendor_id && self.product_id == product_id
     }
 }
-
-pub trait SerialNumberExt {
-    fn serial_number(&self) -> Option<&str>;
-}
-
-
-/// An enum that controls how a device will be opened
-///
-/// This mainly influences the flags passed to the underlying OS api,
-/// but is also used to avoid initializing read specific data structures for write-only devices.
-///
-/// In general `Read` means shared access and `Write` or `ReadWrite` means exclusive access
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
-pub enum AccessMode {
-    Read,
-    Write,
-    #[default]
-    ReadWrite
-}
-
-impl AccessMode {
-    pub fn readable(self) -> bool {
-        matches!(self, Self::Read | Self::ReadWrite)
-    }
-    pub fn writeable(self) -> bool {
-        matches!(self, Self::Write | Self::ReadWrite)
-    }
-}

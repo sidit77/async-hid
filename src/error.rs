@@ -41,6 +41,12 @@ impl std::error::Error for HidError {
     }
 }
 
+impl From<std::io::Error> for HidError {
+    #[track_caller]
+    fn from(value: std::io::Error) -> Self {
+        HidError::from_backend(value)
+    }
+}
 
 #[cfg(all(target_os = "windows"))]
 impl From<windows::core::Error> for HidError {

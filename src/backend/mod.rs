@@ -1,5 +1,5 @@
 use crate::{DeviceInfo, HidResult};
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug};
 use std::future::Future;
 use std::hash::Hash;
 use futures_core::Stream;
@@ -13,9 +13,6 @@ mod winrt;
 
 #[cfg(target_os = "linux")]
 mod hidraw;
-#[cfg(target_os = "linux")]
-pub use hidraw::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
-
 
 #[cfg(target_os = "macos")]
 mod iohidmanager;
@@ -24,7 +21,6 @@ pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendE
 
 
 pub trait Backend: Sized {
-    type Error: Debug + Display + Send + Sync;
     type DeviceId: Debug + PartialEq + Eq + Clone + Hash + Send + Sync;
     type Reader: AsyncHidRead + Send + Sync;
     type Writer: AsyncHidWrite + Send + Sync;
@@ -40,3 +36,6 @@ pub type DefaultBackend = win32::Win32Backend;
 
 #[cfg(all(target_os = "windows", feature = "winrt", not(feature = "win32")))]
 pub type DefaultBackend = winrt::WinRtBackend;
+
+#[cfg(target_os = "linux")]
+pub type DefaultBackend = hidraw::HidRawBackend;
