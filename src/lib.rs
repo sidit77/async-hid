@@ -8,7 +8,7 @@ mod traits;
 
 use static_assertions::assert_impl_all;
 
-pub use crate::error::{ErrorSource, HidError, HidResult};
+pub use crate::error::{HidError, HidResult};
 pub use device::{Device, DeviceReader, DeviceWriter};
 pub use device_info::{AccessMode, DeviceInfo, SerialNumberExt};
 pub use traits::{AsyncHidRead, AsyncHidWrite};

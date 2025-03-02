@@ -1,63 +1,52 @@
-use crate::backend::DefaultBackend;
-use crate::Backend;
 use std::borrow::Cow;
-use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::panic::Location;
 
-pub type HidResult<T, B = DefaultBackend> = Result<T, HidError<B>>;
+pub type HidResult<T> = Result<T, HidError>;
 
 #[derive(Debug)]
-pub enum ErrorSource<E> {
-    PlatformSpecific(E),
-    InvalidZeroSizeData,
-    Custom(Cow<'static, str>)
+pub enum HidError {
+    Message(Cow<'static, str>),
+    Other(Box<dyn std::error::Error + Send + Sync>)
 }
 
-pub struct HidError<B: Backend = DefaultBackend> {
-    location: &'static Location<'static>,
-    source: ErrorSource<B::Error>
-}
-
-impl<B: Backend> HidError<B> {
-    #[track_caller]
-    pub fn custom(msg: impl Into<Cow<'static, str>>) -> Self {
-        Self {
-            location: Location::caller(),
-            source: ErrorSource::Custom(msg.into())
-        }
+impl HidError {
+    pub fn message(msg: impl Into<Cow<'static, str>>) -> Self {
+        Self::Message(msg.into())
     }
 
     #[track_caller]
-    pub fn zero_sized_data() -> Self {
-        Self {
-            location: Location::caller(),
-            source: ErrorSource::InvalidZeroSizeData
-        }
+    pub fn from_backend(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        let error = error.into();
+        log::trace!("Backend error: {} at {}", error, Location::caller());
+        Self::Other(error)
     }
 }
 
-impl<B: Backend> Debug for HidError<B> {
+impl Display for HidError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HidError: {:?}\n\tat {}", self.source, self.location)
-    }
-}
-
-impl<B: Backend> Display for HidError<B> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.source)
-    }
-}
-
-impl<B: Backend> Error for HidError<B> {}
-
-impl<B: Backend, T: Into<ErrorSource<B::Error>>> From<T> for HidError<B> {
-    #[track_caller]
-    fn from(value: T) -> Self {
-        Self {
-            location: Location::caller(),
-            source: value.into()
+        match self {
+            HidError::Message(msg) => f.write_str(msg),
+            HidError::Other(err) => Display::fmt(err, f)
         }
+    }
+}
+
+impl std::error::Error for HidError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HidError::Other(err) => Some(err.as_ref()),
+            _ => None
+        }
+    }
+}
+
+
+#[cfg(all(target_os = "windows"))]
+impl From<windows::core::Error> for HidError {
+    #[track_caller]
+    fn from(error: windows::core::Error) -> Self {
+        HidError::from_backend(error)
     }
 }
 

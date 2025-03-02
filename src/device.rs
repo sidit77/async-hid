@@ -46,17 +46,17 @@ impl<B: Backend> AsyncHidWrite for Device<B> {
 
 impl<B: Backend> DeviceInfo<B> {
 
-    pub async fn open_readable(&self) -> HidResult<DeviceReader<B>, B> {
+    pub async fn open_readable(&self) -> HidResult<DeviceReader<B>> {
         let (r, _) = B::open(&self.id, true, false).await?;
         Ok(DeviceReader(r.unwrap()))
     }
 
-    pub async fn open_writeable(&self) -> HidResult<DeviceWriter<B>, B> {
+    pub async fn open_writeable(&self) -> HidResult<DeviceWriter<B>> {
         let (_, w) = B::open(&self.id, false, true).await?;
         Ok(DeviceWriter(w.unwrap()))
     }
 
-    pub async fn open(&self) -> HidResult<Device<B>, B> {
+    pub async fn open(&self) -> HidResult<Device<B>> {
         let (r, w) = B::open(&self.id, true, true).await?;
         Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
     }
