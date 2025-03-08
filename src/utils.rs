@@ -3,7 +3,7 @@
 use std::iter::Fuse;
 
 pub trait TryIterExt<T, E> {
-    
+
     fn try_collect_vec(self) -> Result<Vec<T>, E>;
 
     fn try_flatten(self) -> TryFlattenIter<Self, T> where T: IntoIterator, Self: Sized;
@@ -46,10 +46,6 @@ where
             match self.inner.next()? {
                 Ok(iter) => self.current = Some(iter.into_iter()),
                 Err(err) => return Some(Err(err))
-            }
-
-            if self.current.is_none() {
-                return None;
             }
         }
     }

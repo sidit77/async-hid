@@ -67,12 +67,11 @@ impl Interface {
     pub fn get_interface_list() -> HidResult<U16StringList> {
         let iface = unsafe { HidD_GetHidGuid() };
 
-        let mut device_interface_list = Vec::new();
+        let mut device_interface_list = vec![0; Self::get_interface_list_length(iface)?];
         loop {
-            device_interface_list.resize(Self::get_interface_list_length(iface)?, 0);
             match unsafe { CM_Get_Device_Interface_ListW(&iface, None, device_interface_list.as_mut_slice(), CM_GET_DEVICE_INTERFACE_LIST_PRESENT) } {
                 CR_SUCCESS => return Ok(unsafe { U16StringList::from_vec_unchecked(device_interface_list) }),
-                CR_BUFFER_SMALL => continue,
+                CR_BUFFER_SMALL => device_interface_list.resize(Self::get_interface_list_length(iface)?, 0),
                 err => return Err(err.into()),
             }
         }

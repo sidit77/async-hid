@@ -48,7 +48,7 @@ impl From<std::io::Error> for HidError {
     }
 }
 
-#[cfg(all(target_os = "windows"))]
+#[cfg(target_os = "windows")]
 impl From<windows::core::Error> for HidError {
     #[track_caller]
     fn from(error: windows::core::Error) -> Self {

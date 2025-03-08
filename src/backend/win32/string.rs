@@ -83,6 +83,7 @@ impl U16Str {
      */
 }
 
+#[allow(clippy::to_string_trait_impl)]
 impl ToString for U16Str {
     fn to_string(&self) -> String {
         String::from_utf16(self.as_slice()).expect("Invalid UTF-16")

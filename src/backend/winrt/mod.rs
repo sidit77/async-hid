@@ -42,9 +42,7 @@ impl Backend for WinRtBackend {
             (_, true) => FileAccessMode::ReadWrite,
             (false, false) => panic!("Not supported")
         };
-        let id = match id {
-            DeviceId::UncPath(path) => path
-        };
+        let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, mode)?
             .await
             .extract_null()?

@@ -13,6 +13,7 @@ pub trait Backend: Sized + Default {
 
     fn enumerate(&self) -> impl Future<Output = HidResult<DeviceInfoStream>> + Send;
 
+    #[allow(clippy::type_complexity)]
     fn open(&self, id: &DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
 
 }
