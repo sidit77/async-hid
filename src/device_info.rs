@@ -21,12 +21,12 @@ assert_impl_all!(DeviceId: Send, Sync, Unpin);
 
 /// A struct containing basic information about a device
 ///
-/// This struct can be obtained by calling [DeviceInfo::enumerate] and upgraded into a usable [Device] by calling [DeviceInfo::open].
+/// This struct is part of a [Device] and can be obtained by calling [DeviceInfo::enumerate].
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct DeviceInfo {
     /// OS specific identifier
     pub id: DeviceId,
-    /// The human readable name
+    /// The human-readable name
     pub name: String,
     /// The HID product id assigned to this device
     pub product_id: u16,
@@ -42,14 +42,7 @@ pub struct DeviceInfo {
 assert_impl_all!(DeviceInfo: Send, Sync, Unpin);
 
 impl DeviceInfo {
-    /// Enumerates all **accessible** HID devices
-    ///
-    /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
-    /// Register a `log` compatible logger at `trace` level for more information about the discarded devices.
-    //pub fn enumerate() -> impl Future<Output = HidResult<impl Stream<Item = DeviceInfo<B>> + Unpin + Send>> {
-    //    B::enumerate()
-    //}
-
+    
     /// Convenience method for easily finding a specific device
     pub fn matches(&self, usage_page: u16, usage_id: u16, vendor_id: u16, product_id: u16) -> bool {
         self.usage_page == usage_page && self.usage_id == usage_id && self.vendor_id == vendor_id && self.product_id == product_id
@@ -63,7 +56,10 @@ impl HidBackend {
     pub fn new(backend: BackendType) -> Self {
         Self(Arc::new(DynBackend::new(backend)))
     }
-    
+
+    /// Enumerates all **accessible** HID devices
+    ///
+    /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
     pub async fn enumerate(&self) -> HidResult<impl Stream<Item = Device> + Send + Unpin + '_> {
         let steam = self.0
             .enumerate()
@@ -77,6 +73,7 @@ impl HidBackend {
     
 }
 
+/// and upgraded into a usable [Device] by calling [DeviceInfo::open]
 pub struct Device {
     backend: Arc<DynBackend>,
     device_info: DeviceInfo,
