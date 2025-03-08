@@ -18,3 +18,4 @@ pub use backend::{BackendType};
 
 assert_impl_all!(DeviceReaderWriter: Send, Sync);
 assert_impl_all!(DeviceInfo: Send, Sync);
+

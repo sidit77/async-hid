@@ -1,4 +1,4 @@
-use futures_core::Stream;
+use futures_lite::Stream;
 use std::pin::Pin;
 use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::task::{Context, Poll};
