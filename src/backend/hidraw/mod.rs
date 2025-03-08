@@ -148,7 +148,7 @@ impl AsyncHidRead for HidDevice {
 
 impl AsyncHidWrite for HidDevice {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
-        write_with(&self.0, |fd| write(fd.as_raw_fd(), buf).map_err(std::io::Error::from))
+        write_with(&self.0, |fd| write(fd, buf).map_err(std::io::Error::from))
             .await
             .map_err(HidError::from)
             .map(|i| debug_assert_eq!(i, buf.len()))
