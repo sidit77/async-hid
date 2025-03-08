@@ -19,7 +19,7 @@ impl_TCFType!(IOHIDManager, IOHIDManagerRef, IOHIDManagerGetTypeID);
 impl IOHIDManager {
     pub fn new() -> HidResult<Self> {
         let manager = unsafe { IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone) };
-        ensure!(!manager.is_null(), HidError::custom("Failed to create IOHIDManager"));
+        ensure!(!manager.is_null(), HidError::message("Failed to create IOHIDManager"));
 
         unsafe { IOHIDManagerSetDeviceMatching(manager, null()) };
 
@@ -28,7 +28,7 @@ impl IOHIDManager {
 
     pub fn get_devices(&mut self) -> HidResult<Vec<IOHIDDevice>> {
         let devices = unsafe { IOHIDManagerCopyDevices(self.0) };
-        ensure!(!devices.is_null(), HidError::custom("Failed to copy device list"));
+        ensure!(!devices.is_null(), HidError::message("Failed to copy device list"));
         let devices: CFSet<IOHIDDeviceRef> = unsafe { CFSet::wrap_under_create_rule(devices) };
 
         let num_devices = devices.len();

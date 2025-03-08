@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use atomic_waker::AtomicWaker;
 use log::trace;
 use static_assertions::assert_not_impl_all;
-use windows::Win32::Foundation::{BOOLEAN, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Threading::{RegisterWaitForSingleObject, UnregisterWaitEx, INFINITE, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE};
 use crate::HidResult;
 
@@ -17,6 +17,9 @@ pub struct WaitableHandleFuture {
     registration: HANDLE,
     inner: WaitableHandleFutureInner
 }
+
+unsafe impl Send for WaitableHandleFuture {}
+unsafe impl Sync for WaitableHandleFuture {}
 
 #[derive(Default)]
 struct WaitableHandleFutureInner {
@@ -34,7 +37,7 @@ impl WaitableHandleFuture {
         }
     }
 
-    unsafe extern "system" fn callback_func(inner: *mut c_void, _: BOOLEAN) {
+    unsafe extern "system" fn callback_func(inner: *mut c_void, _: bool) {
         trace!("Received wait callback");
         let inner = &*(inner as *const WaitableHandleFutureInner);
         inner.complete.store(true, Ordering::SeqCst);
@@ -50,7 +53,7 @@ impl Future for WaitableHandleFuture {
 
     fn poll(mut self: Pin<&mut WaitableHandleFuture>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.registration.is_invalid() {
-            trace!("Registering waitable handle ({}) with the I/O thread pool", self.waitable.0);
+            trace!("Registering waitable handle ({}) with the I/O thread pool", self.waitable.0 as usize);
             unsafe {
                 RegisterWaitForSingleObject(
                     // SAFETY: Only the [WaitableHandleFutureInner] part of the [WaitableHandleFuture] must be !Unpin.
@@ -78,14 +81,14 @@ impl Future for WaitableHandleFuture {
 impl Drop for WaitableHandleFuture {
     fn drop(&mut self) {
         if !self.registration.is_invalid() {
-            trace!("Unregistering waitable handle ({}) from the I/O thread pool", self.waitable.0);
+            trace!("Unregistering waitable handle ({}) from the I/O thread pool", self.waitable.0 as usize);
             unsafe {
                 // SAFETY: Calling `UnregisterWaitEx` with `INVALID_HANDLE_VALUE` will cancel the wait and wait for all callbacks functions to complete before returning.
                 // Therefore, all pointers to the [WaitableHandleFutureInner] should be gone by the time this function returns.
-                UnregisterWaitEx(self.registration, INVALID_HANDLE_VALUE)
+                UnregisterWaitEx(self.registration, None)
                     .expect("Failed to cancel wait");
             }
-            trace!("Waitable handle ({}) was successfully unregistered from the I/O thread pool", self.waitable.0);
+            trace!("Waitable handle ({}) was successfully unregistered from the I/O thread pool", self.waitable.0 as usize);
         }
     }
 }

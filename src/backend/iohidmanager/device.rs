@@ -35,7 +35,7 @@ impl TryFrom<IOHIDDeviceRef> for IOHIDDevice {
     type Error = HidError;
 
     fn try_from(value: IOHIDDeviceRef) -> Result<Self, Self::Error> {
-        ensure!(!value.is_null(), HidError::custom("IOHIDDevice is null"));
+        ensure!(!value.is_null(), HidError::message("IOHIDDevice is null"));
         Ok(unsafe { IOHIDDevice::wrap_under_get_rule(value) })
     }
 }
@@ -47,7 +47,7 @@ impl TryFrom<RegistryEntryId> for IOHIDDevice {
         unsafe {
             let service = IOService::try_from(value)?;
             let device = IOHIDDeviceCreate(kCFAllocatorDefault, service.raw());
-            ensure!(!device.is_null(), HidError::custom(format!("Failed to open device at port {:?}", value)));
+            ensure!(!device.is_null(), HidError::message(format!("Failed to open device at port {:?}", value)));
             Ok(IOHIDDevice::wrap_under_create_rule(device))
         }
     }
@@ -63,7 +63,7 @@ impl IOHIDDevice {
     pub fn untyped_property(&self, key: impl Key) -> HidResult<CFType> {
         let key = key.to_string();
         let property_ref = unsafe { IOHIDDeviceGetProperty(self.as_concrete_TypeRef(), key.as_concrete_TypeRef()) };
-        ensure!(!property_ref.is_null(), HidError::custom("Failed to retrieve property"));
+        ensure!(!property_ref.is_null(), HidError::message("Failed to retrieve property"));
         let property = unsafe { CFType::wrap_under_get_rule(property_ref) };
         Ok(property)
     }
@@ -71,12 +71,12 @@ impl IOHIDDevice {
     pub fn property<T: ConcreteCFType>(&self, key: impl Key) -> HidResult<T> {
         self.untyped_property(key)?
             .downcast_into::<T>()
-            .ok_or(HidError::custom("Failed to cast property"))
+            .ok_or(HidError::message("Failed to cast property"))
     }
 
     pub fn get_i32_property(&self, key: impl Key) -> HidResult<i32> {
         self.property::<CFNumber>(key)
-            .and_then(|v| v.to_i32().ok_or(HidError::custom("Property is not an i32")))
+            .and_then(|v| v.to_i32().ok_or(HidError::message("Property is not an i32")))
     }
 
     pub fn get_string_property(&self, key: impl Key) -> HidResult<String> {
@@ -88,7 +88,7 @@ impl IOHIDDevice {
         //TODO check for kIOReturnNotPermitted
         ensure!(
             ret == kIOReturnSuccess,
-            HidError::custom(format!("failed to open IOHIDDevice: {:?}", ret))
+            HidError::message(format!("failed to open IOHIDDevice: {:?}", ret))
         );
         Ok(())
     }
@@ -97,7 +97,7 @@ impl IOHIDDevice {
         let ret = unsafe { IOHIDDeviceClose(self.as_concrete_TypeRef(), options) };
         ensure!(
             ret == kIOReturnSuccess,
-            HidError::custom(format!("failed to close IOHIDDevice: {:?}", ret))
+            HidError::message(format!("failed to close IOHIDDevice: {:?}", ret))
         );
         Ok(())
     }
@@ -116,7 +116,7 @@ impl IOHIDDevice {
 
     pub fn set_report(&self, report_type: IOHIDReportType, report_id: CFIndex, report: &[u8]) -> HidResult<()> {
         let ret = unsafe { IOHIDDeviceSetReport(self.as_concrete_TypeRef(), report_type, report_id, report.as_ptr(), report.len() as _) };
-        ensure!(ret == kIOReturnSuccess, HidError::custom(format!("Failed to send report: {}", ret)));
+        ensure!(ret == kIOReturnSuccess, HidError::message(format!("Failed to send report: {}", ret)));
         Ok(())
     }
 
