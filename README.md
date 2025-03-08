@@ -12,7 +12,7 @@ use async_hid::{AccessMode, DeviceInfo, HidResult};
 use simple_logger::SimpleLogger;
 use futures_lite::StreamExt;
 
-#[tokio::main]
+#[pollster::main]
 async fn main() -> HidResult<()> {
     SimpleLogger::new().init().unwrap();
 

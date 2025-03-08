@@ -117,6 +117,8 @@ macro_rules! dyn_backend_impl {
     };
 }
 
+// Dynamic dispatch doesn't play well with async traits so we just generate a big enum
+// that forwards function calls the correct implementations
 dyn_backend_impl! {
     #[cfg(all(target_os = "windows", feature = "win32"))]
     mod win32 {
