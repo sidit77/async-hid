@@ -1,8 +1,7 @@
 mod descriptor;
 mod ioctl;
-mod utils;
 
-use std::fs::{OpenOptions, read_dir, read_to_string};
+use std::fs::{read_dir, read_to_string, OpenOptions};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -13,10 +12,10 @@ use nix::fcntl::OFlag;
 use nix::unistd::{read, write};
 
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
-use crate::backend::hidraw::utils::{TryIterExt};
-use crate::{ensure, DeviceInfo, HidError, HidResult, AsyncHidRead, AsyncHidWrite, DeviceId};
+use crate::utils::TryIterExt;
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceId, DeviceInfo, HidError, HidResult};
 use crate::backend::{Backend, DeviceInfoStream};
-use crate::backend::hidraw::async_api::{AsyncFd, read_with, write_with};
+use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
 
 #[derive(Default)]

@@ -20,7 +20,7 @@ impl TryFrom<&IOHIDDevice> for IOService {
 
     fn try_from(value: &IOHIDDevice) -> Result<Self, Self::Error> {
         let service = unsafe { IOHIDDeviceGetService(value.as_concrete_TypeRef()) };
-        ensure!(service != MACH_PORT_NULL, HidError::custom("Invalid IOService"));
+        ensure!(service != MACH_PORT_NULL, HidError::message("Invalid IOService"));
         Ok(IOService(service))
     }
 }
@@ -30,7 +30,7 @@ impl TryFrom<RegistryEntryId> for IOService {
 
     fn try_from(value: RegistryEntryId) -> Result<Self, Self::Error> {
         let service = unsafe { IOServiceGetMatchingService(kIOMasterPortDefault, value.matching()) };
-        ensure!(service != MACH_PORT_NULL, HidError::custom("Invalid IOService"));
+        ensure!(service != MACH_PORT_NULL, HidError::message("Invalid IOService"));
         Ok(IOService(service))
     }
 }
@@ -42,7 +42,7 @@ impl IOService {
 
     pub fn duplicate(&self) -> HidResult<Self> {
         let result = unsafe { IOObjectRetain(self.0) };
-        ensure!(result == kIOReturnSuccess, HidError::custom("Failed to duplicate IOService"));
+        ensure!(result == kIOReturnSuccess, HidError::message("Failed to duplicate IOService"));
         Ok(IOService(self.0))
     }
 
@@ -50,7 +50,7 @@ impl IOService {
         let copy = self.duplicate()?;
         let mut entry_id = 0;
         let result = unsafe { IORegistryEntryGetRegistryEntryID(copy.0, &mut entry_id) };
-        ensure!(result == kIOReturnSuccess, HidError::custom("Failed to retrieve entry id"));
+        ensure!(result == kIOReturnSuccess, HidError::message("Failed to retrieve entry id"));
         Ok(RegistryEntryId(entry_id))
     }
 }
@@ -63,7 +63,7 @@ impl Drop for IOService {
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 #[repr(transparent)]
-pub struct RegistryEntryId(u64);
+pub struct RegistryEntryId(pub u64);
 
 impl RegistryEntryId {
     fn matching(self) -> CFMutableDictionaryRef {
