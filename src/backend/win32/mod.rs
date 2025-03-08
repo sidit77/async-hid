@@ -8,9 +8,9 @@ mod interface;
 use std::future::Future;
 use std::sync::{Arc};
 
-use futures_lite::Stream;
+use futures_lite::{Stream, StreamExt};
 use futures_lite::stream::iter;
-use windows::core::{HRESULT};
+use windows::core::{HRESULT, PCWSTR};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, CONFIGRET};
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
@@ -19,12 +19,13 @@ use crate::{DeviceInfo, HidError};
 use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use interface::Interface;
-use crate::backend::Backend;
+use crate::backend::{Backend, DeviceInfoStream};
 use crate::backend::win32::string::{U16Str, U16String};
+use crate::device_info::DeviceId;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 
 fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
-    let id = device.to_owned();
+    let id = DeviceId::UncPath(device.into());
     let device = Device::open(device.as_ptr(), false, false)?;
     let name = device.name()?;
     let attribs = device.attributes()?;
@@ -41,14 +42,15 @@ fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
     })
 }
 
+#[derive(Default)]
 pub struct Win32Backend;
 
 impl Backend for Win32Backend {
-    type DeviceId = U16String;
+    //type DeviceId = U16String;
     type Reader = IoBuffer<Readable>;
     type Writer = IoBuffer<Writable>;
 
-    async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send>{
+    async fn enumerate(&self) -> HidResult<DeviceInfoStream>{
         let devices = Interface::get_interface_list()?
             .iter()
             .filter_map(|i| {
@@ -57,11 +59,15 @@ impl Backend for Win32Backend {
                     .ok()
             })
             .collect::<Vec<_>>();
-        Ok(iter(devices))
+        Ok(iter(devices).boxed())
     }
 
-    async fn open(id: &Self::DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
-        let device = Arc::new(Device::open(id.as_ptr(), read, write)?);
+    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        let id = match id {
+            DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr()),
+            _ => panic!("Unsupported device ID"),
+        };
+        let device = Arc::new(Device::open(id, read, write)?);
 
         if read {
             check_error(unsafe { HidD_SetNumInputBuffers(device.handle(), 64) })?;

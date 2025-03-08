@@ -1,19 +1,18 @@
-use crate::backend::{Backend, DefaultBackend};
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
-use crate::{DeviceInfo, HidResult};
+use crate::{Backend, DeviceInfo, HidResult};
 use std::future::Future;
-
-
-#[repr(transparent)]
-pub struct DeviceReader<B: Backend = DefaultBackend>(B::Reader);
+use crate::backend::DynBackend;
 
 #[repr(transparent)]
-pub struct DeviceWriter<B: Backend = DefaultBackend>(B::Writer);
+pub struct DeviceReader(<DynBackend as Backend>::Reader);
 
-pub type Device<B = DefaultBackend> = (DeviceReader<B>, DeviceWriter<B>);
+#[repr(transparent)]
+pub struct DeviceWriter(<DynBackend as Backend>::Writer);
+
+pub type Device = (DeviceReader, DeviceWriter);
 
 
-impl<B: Backend> AsyncHidRead for DeviceReader<B> {
+impl AsyncHidRead for DeviceReader {
     #[inline]
     fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output=HidResult<usize>> + Send + 'a {
         self.0.read_input_report(buf)
@@ -21,7 +20,7 @@ impl<B: Backend> AsyncHidRead for DeviceReader<B> {
 
 }
 
-impl<B: Backend> AsyncHidWrite for DeviceWriter<B> {
+impl AsyncHidWrite for DeviceWriter {
     #[inline]
     fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output=HidResult<()>> + Send + 'a {
         self.0.write_output_report(buf)
@@ -29,14 +28,14 @@ impl<B: Backend> AsyncHidWrite for DeviceWriter<B> {
 
 }
 
-impl<B: Backend> AsyncHidRead for Device<B> {
+impl AsyncHidRead for Device {
     #[inline]
     fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output=HidResult<usize>> + Send + 'a {
         self.0.read_input_report(buf)
     }
 }
 
-impl<B: Backend> AsyncHidWrite for Device<B> {
+impl AsyncHidWrite for Device {
     #[inline]
     fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output=HidResult<()>> + Send + 'a {
         self.1.write_output_report(buf)
@@ -44,19 +43,19 @@ impl<B: Backend> AsyncHidWrite for Device<B> {
 
 }
 
-impl<B: Backend> DeviceInfo<B> {
+impl DeviceInfo {
 
-    pub async fn open_readable(&self) -> HidResult<DeviceReader<B>> {
+    pub async fn open_readable(&self) -> HidResult<DeviceReader> {
         let (r, _) = B::open(&self.id, true, false).await?;
         Ok(DeviceReader(r.unwrap()))
     }
 
-    pub async fn open_writeable(&self) -> HidResult<DeviceWriter<B>> {
+    pub async fn open_writeable(&self) -> HidResult<DeviceWriter> {
         let (_, w) = B::open(&self.id, false, true).await?;
         Ok(DeviceWriter(w.unwrap()))
     }
 
-    pub async fn open(&self) -> HidResult<Device<B>> {
+    pub async fn open(&self) -> HidResult<Device> {
         let (r, w) = B::open(&self.id, true, true).await?;
         Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
     }

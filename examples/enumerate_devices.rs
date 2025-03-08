@@ -1,4 +1,4 @@
-use async_hid::{DeviceInfo, HidResult, SerialNumberExt};
+use async_hid::{DeviceInfo, HidResult};
 use futures_lite::stream::StreamExt;
 use log::LevelFilter;
 use simple_logger::SimpleLogger;
@@ -20,7 +20,7 @@ async fn main() -> HidResult<()> {
                 device.usage_id,
                 device.vendor_id,
                 device.product_id,
-                device.serial_number()
+                device.serial_number
             );
         })
         .await;

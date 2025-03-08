@@ -1,7 +1,7 @@
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
-use windows::core::PCWSTR;
+use windows::core::{HSTRING, PCWSTR};
 
 #[derive(Eq, PartialEq, Hash, Ord, PartialOrd)]
 #[repr(transparent)]
@@ -105,6 +105,12 @@ impl ToOwned for U16Str {
 
     fn to_owned(&self) -> Self::Owned {
         U16String(self.0.to_vec())
+    }
+}
+
+impl From<&U16Str> for HSTRING {
+    fn from(value: &U16Str) -> Self {
+        HSTRING::from_wide(value.as_slice())
     }
 }
 
