@@ -21,7 +21,7 @@ mod iohidmanager;
 pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
 
 
-pub type DeviceInfoStream = BoxStream<'static, DeviceInfo>;
+pub type DeviceInfoStream = BoxStream<'static, HidResult<DeviceInfo>>;
 pub trait Backend: Sized + Default {
     type Reader: AsyncHidRead + Send + Sync;
     type Writer: AsyncHidWrite + Send + Sync;

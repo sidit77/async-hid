@@ -6,60 +6,40 @@ mod string;
 mod interface;
 
 use std::future::Future;
-use std::sync::{Arc};
+use std::sync::Arc;
 
-use futures_lite::{StreamExt};
+use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
+use crate::backend::win32::device::Device;
+use crate::backend::{Backend, DeviceInfoStream};
+use crate::device_info::DeviceId;
+use crate::error::HidResult;
+use crate::traits::{AsyncHidRead, AsyncHidWrite};
+use crate::{DeviceInfo, HidError};
 use futures_lite::stream::iter;
-use windows::core::{HRESULT, PCWSTR};
+use futures_lite::StreamExt;
+use interface::Interface;
+use windows::core::{HRESULT, HSTRING, PCWSTR};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, CONFIGRET};
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
-use crate::error::{HidResult};
-use crate::{DeviceInfo, HidError};
-use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
-use crate::backend::win32::device::Device;
-use interface::Interface;
-use crate::backend::{Backend, DeviceInfoStream};
-use crate::backend::win32::string::{U16Str};
-use crate::device_info::DeviceId;
-use crate::traits::{AsyncHidRead, AsyncHidWrite};
-
-fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
-    let id = DeviceId::UncPath(device.into());
-    let device = Device::open(device.as_ptr(), false, false)?;
-    let name = device.name()?;
-    let attribs = device.attributes()?;
-    let caps = device.preparsed_data()?.caps()?;
-    let serial_number = device.serial_number();
-    Ok(DeviceInfo {
-        id,
-        name,
-        product_id: attribs.ProductID,
-        vendor_id: attribs.VendorID,
-        usage_id: caps.Usage,
-        usage_page: caps.UsagePage,
-        serial_number
-    })
-}
 
 #[derive(Default)]
 pub struct Win32Backend;
 
 impl Backend for Win32Backend {
-    //type DeviceId = U16String;
+    
     type Reader = IoBuffer<Readable>;
     type Writer = IoBuffer<Writable>;
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream>{
-        let devices = Interface::get_interface_list()?
+        let device_ids = Interface::get_interface_list()?
             .iter()
-            .filter_map(|i| {
-                get_device_information(i)
-                    .map_err(|e| log::trace!("Failed to query device information for {i:?}: {e}"))
-                    .ok()
-            })
+            .map(HSTRING::from)
             .collect::<Vec<_>>();
-        Ok(iter(devices).boxed())
+        let device_infos = device_ids
+            .into_iter()
+            .map(get_device_information);
+        Ok(iter(device_infos).boxed())
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
@@ -85,6 +65,24 @@ impl Backend for Win32Backend {
         Ok((read_buffer, write_buffer))
     }
 }
+
+fn get_device_information(id: HSTRING) -> HidResult<DeviceInfo> {
+    let device = Device::open(PCWSTR(id.as_ptr()), false, false)?;
+    let name = device.name()?;
+    let attribs = device.attributes()?;
+    let caps = device.preparsed_data()?.caps()?;
+    let serial_number = device.serial_number();
+    Ok(DeviceInfo {
+        id: DeviceId::UncPath(id),
+        name,
+        product_id: attribs.ProductID,
+        vendor_id: attribs.VendorID,
+        usage_id: caps.Usage,
+        usage_page: caps.UsagePage,
+        serial_number
+    })
+}
+
 impl AsyncHidRead for IoBuffer<Readable> {
 
     #[inline]

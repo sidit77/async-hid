@@ -10,8 +10,8 @@ use windows::Storage::FileAccessMode;
 
 use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResultExt};
 use crate::error::{HidResult};
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, Backend, DeviceInfo, HidError};
-use crate::backend::DeviceInfoStream;
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceInfo, HidError};
+use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 
 const DEVICE_SELECTOR: &HSTRING = h!(
@@ -31,11 +31,7 @@ impl Backend for WinRtBackend {
             .await?;
         let devices = DeviceInformationSteam::from(devices)
             .then(|info| Box::pin(get_device_information(info)))
-            .filter_map(|r| {
-                r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
-                    .ok()
-                    .flatten()
-            });
+            .filter_map(|r| r.transpose());
 
         Ok(devices.boxed())
     }
