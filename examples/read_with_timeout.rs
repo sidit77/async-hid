@@ -1,8 +1,9 @@
+use std::time::Duration;
+
 use async_hid::{AsyncHidRead, BackendType, HidBackend, HidResult};
 use async_io::Timer;
 use futures_lite::{FutureExt, StreamExt};
 use simple_logger::SimpleLogger;
-use std::time::Duration;
 
 #[pollster::main]
 async fn main() -> HidResult<()> {
@@ -16,12 +17,7 @@ async fn main() -> HidResult<()> {
         .inspect(|info| {
             println!(
                 "{}: 0x{:X} 0x{:X} 0x{:X} 0x{:X} {:?}",
-                info.name,
-                info.usage_page,
-                info.usage_id,
-                info.vendor_id,
-                info.product_id,
-                info.id
+                info.name, info.usage_page, info.usage_id, info.vendor_id, info.product_id, info.id
             );
         })
         .expect("Could not find device")
@@ -30,9 +26,14 @@ async fn main() -> HidResult<()> {
 
     let mut buffer = [0u8; 8];
     loop {
-        let size = device.read_input_report(&mut buffer).or(async { Timer::after(Duration::from_secs(4)).await; Ok(0) }).await?;
+        let size = device
+            .read_input_report(&mut buffer)
+            .or(async {
+                Timer::after(Duration::from_secs(4)).await;
+                Ok(0)
+            })
+            .await?;
         //sleep(std::time::Duration::from_millis(10));
         println!("{:?}", &buffer[..size]);
     }
-
 }

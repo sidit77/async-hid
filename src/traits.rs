@@ -1,4 +1,5 @@
 use std::future::Future;
+
 use crate::HidResult;
 
 pub trait AsyncHidRead {
@@ -8,4 +9,3 @@ pub trait AsyncHidRead {
 pub trait AsyncHidWrite {
     fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a;
 }
-

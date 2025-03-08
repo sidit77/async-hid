@@ -1,10 +1,12 @@
-use crate::{DeviceInfo, HidResult};
-use std::fmt::{Debug};
+use std::fmt::Debug;
 use std::future::Future;
 use std::hash::Hash;
+
 use futures_lite::stream::Boxed;
-use crate::traits::{AsyncHidRead, AsyncHidWrite};
+
 use crate::device_info::DeviceId;
+use crate::traits::{AsyncHidRead, AsyncHidWrite};
+use crate::{DeviceInfo, HidResult};
 
 pub type DeviceInfoStream = Boxed<HidResult<DeviceInfo>>;
 pub trait Backend: Sized + Default {
@@ -15,7 +17,6 @@ pub trait Backend: Sized + Default {
 
     #[allow(clippy::type_complexity)]
     fn open(&self, id: &DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
-
 }
 
 macro_rules! dyn_backend_impl {
@@ -32,7 +33,7 @@ macro_rules! dyn_backend_impl {
             $(#[$module_attrs])*
             mod $module;
         )+
-        
+
         #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
         #[non_exhaustive]
         pub enum BackendType {
@@ -41,7 +42,7 @@ macro_rules! dyn_backend_impl {
                 $name,
             )+
         }
-        
+
         pub enum DynReader {
             $(
                 $(#[$module_attrs])*$(#[$item_attrs])*
@@ -58,7 +59,7 @@ macro_rules! dyn_backend_impl {
                 }
             }
         }
-        
+
         pub enum DynWriter {
             $(
                 $(#[$module_attrs])*$(#[$item_attrs])*
@@ -75,7 +76,7 @@ macro_rules! dyn_backend_impl {
                 }
             }
         }
-        
+
          pub enum DynBackend {
             $(
                 $(#[$module_attrs])*$(#[$item_attrs])*
@@ -95,8 +96,8 @@ macro_rules! dyn_backend_impl {
         impl Backend for DynBackend {
             type Reader = DynReader;
             type Writer = DynWriter;
-        
-            
+
+
             async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
                 match self {
                     $(
@@ -105,7 +106,7 @@ macro_rules! dyn_backend_impl {
                     )+
                 }
             }
-        
+
             async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
                 match self {
                     $(
