@@ -1,6 +1,6 @@
-use crate::backend::DynBackend;
+use crate::backend::{Backend, DynBackend};
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
-use crate::{Backend, HidResult};
+use crate::{HidResult};
 use std::future::Future;
 
 #[repr(transparent)]

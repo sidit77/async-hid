@@ -12,7 +12,7 @@ pub use crate::error::{HidError, HidResult};
 pub use device::{DeviceReaderWriter, DeviceReader, DeviceWriter};
 pub use device_info::{DeviceInfo, HidBackend, Device, DeviceId};
 pub use traits::{AsyncHidRead, AsyncHidWrite};
-pub use backend::{Backend};
+pub use backend::{BackendType};
 
 
 

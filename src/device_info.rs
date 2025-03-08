@@ -66,7 +66,10 @@ impl HidBackend {
         let steam = self.0
             .enumerate()
             .await?
-            .map(|info| Device { backend: self.0.clone(), device_info: info });
+            .filter_map(|result| match result {
+                Ok(info) => Some(Device { backend: self.0.clone(), device_info: info }),
+                Err(_) => None
+            });
         Ok(steam)
     }
     
