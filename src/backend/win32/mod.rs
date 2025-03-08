@@ -8,7 +8,7 @@ mod interface;
 use std::future::Future;
 use std::sync::{Arc};
 
-use futures_lite::{Stream, StreamExt};
+use futures_lite::{StreamExt};
 use futures_lite::stream::iter;
 use windows::core::{HRESULT, PCWSTR};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, CONFIGRET};
@@ -20,7 +20,7 @@ use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use interface::Interface;
 use crate::backend::{Backend, DeviceInfoStream};
-use crate::backend::win32::string::{U16Str, U16String};
+use crate::backend::win32::string::{U16Str};
 use crate::device_info::DeviceId;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 
@@ -64,8 +64,7 @@ impl Backend for Win32Backend {
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let id = match id {
-            DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr()),
-            _ => panic!("Unsupported device ID"),
+            DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
         };
         let device = Arc::new(Device::open(id, read, write)?);
 

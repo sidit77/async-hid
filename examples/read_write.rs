@@ -1,4 +1,4 @@
-use async_hid::{DeviceInfo, HidError, HidResult, AsyncHidRead, AsyncHidWrite};
+use async_hid::{DeviceInfo, HidError, HidResult, AsyncHidRead, AsyncHidWrite, HidBackend, Device};
 use futures_lite::StreamExt;
 use simple_logger::SimpleLogger;
 use tokio::spawn;
@@ -8,9 +8,10 @@ async fn main() -> HidResult<()> {
     SimpleLogger::new().init().unwrap();
 
     spawn(async {
-        let mut device = DeviceInfo::enumerate()
+        let mut device = HidBackend::default()
+            .enumerate()
             .await?
-            .find(|info: &DeviceInfo| info.matches(0xFFC0, 0x1, 0x1038, 0x2206))
+            .find(|info: &Device| info.matches(0xFFC0, 0x1, 0x1038, 0x2206))
             .await
             .inspect(|info| {
                 println!(

@@ -1,7 +1,7 @@
 mod utils;
 
 use flume::{Receiver, TrySendError};
-use futures_lite::{Stream, StreamExt};
+use futures_lite::{StreamExt};
 use windows::core::{h, Ref, HSTRING};
 use windows::Devices::Enumeration::{DeviceInformation};
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
@@ -47,8 +47,7 @@ impl Backend for WinRtBackend {
             (false, false) => panic!("Not supported")
         };
         let id = match id {
-            DeviceId::UncPath(path) => path,
-            _ => panic!("Unsupported device id")
+            DeviceId::UncPath(path) => path
         };
         let device = HidDevice::FromIdAsync(id, mode)?
             .await
