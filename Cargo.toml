@@ -23,7 +23,6 @@ futures-lite = "2.5"
 static_assertions = "1.1"
 
 [target."cfg(target_os = \"windows\")".dependencies]
-
 flume = { version = "0.11", optional = true }
 atomic-waker = { version = "1.1.2", optional = true }
 windows-future = { version = "0.1.1", optional = true }
@@ -63,4 +62,3 @@ simple_logger = "5"
 futures-lite = "2.5.0"
 pollster = { version = "0.4.0", features = ["macro"] }
 async-io = "2.4.0"
-tokio = { version = "1", features = ["full"] }

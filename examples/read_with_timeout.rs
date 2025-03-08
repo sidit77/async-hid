@@ -1,16 +1,17 @@
-use std::time::Duration;
+use async_hid::{AsyncHidRead, BackendType, HidBackend, HidResult};
 use async_io::Timer;
-use async_hid::{AccessMode, DeviceInfo, HidResult};
 use futures_lite::{FutureExt, StreamExt};
 use simple_logger::SimpleLogger;
+use std::time::Duration;
 
 #[pollster::main]
 async fn main() -> HidResult<()> {
     SimpleLogger::new().init().unwrap();
 
-    let device = DeviceInfo::enumerate()
+    let mut device = HidBackend::new(BackendType::Win32)
+        .enumerate()
         .await?
-        .find(|info: &DeviceInfo| info.matches(0xFF00, 0x1, 0x1038, 0x2206))
+        .find(|info| info.matches(0xFF00, 0x1, 0x1038, 0x2206))
         .await
         .inspect(|info| {
             println!(
@@ -24,7 +25,7 @@ async fn main() -> HidResult<()> {
             );
         })
         .expect("Could not find device")
-        .open(AccessMode::ReadWrite)
+        .open_readable()
         .await?;
 
     let mut buffer = [0u8; 8];
