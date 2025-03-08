@@ -6,12 +6,6 @@ use futures_lite::stream::Boxed;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 use crate::device_info::DeviceId;
 
-#[cfg(target_os = "macos")]
-mod iohidmanager;
-#[cfg(target_os = "macos")]
-pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
-
-
 pub type DeviceInfoStream = Boxed<HidResult<DeviceInfo>>;
 pub trait Backend: Sized + Default {
     type Reader: AsyncHidRead + Send + Sync;
@@ -136,6 +130,10 @@ dyn_backend_impl! {
     mod hidraw {
         HidRaw(hidraw::HidRawBackend)
     }
+    #[cfg(target_os = "macos")]
+    mod iohidmanager {
+        IoHidManager(iohidmanager::IoHidManagerBackend)
+    }
 }
 
 impl Default for DynBackend {
@@ -147,6 +145,14 @@ impl Default for DynBackend {
             return Self::new(BackendType::Win32);
             #[cfg(feature = "winrt")]
             return Self::new(BackendType::WinRt);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            return Self::new(BackendType::HidRaw);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            return Self::new(BackendType::IoHidManager);
         }
         panic!("No suitable backend found");
     }

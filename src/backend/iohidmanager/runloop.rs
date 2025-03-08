@@ -45,7 +45,7 @@ impl<T> LoopSender<T> {
     fn send(&self, item: T) -> HidResult<()> {
         self.sender
             .try_send(item)
-            .map_err(|_| HidError::custom("Failed to send element into the run loop"))?;
+            .map_err(|_| HidError::message("Failed to send element into the run loop"))?;
         self.source.signal();
         Ok(())
     }
@@ -136,7 +136,7 @@ impl RunLoop {
         let sender = receiver
             .recv()
             .await
-            .map_err(|_| HidError::custom("Run loop failed to start"))?;
+            .map_err(|_| HidError::message("Run loop failed to start"))?;
 
         Ok(Self { sender, thread })
     }

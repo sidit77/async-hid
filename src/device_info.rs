@@ -14,6 +14,8 @@ pub enum DeviceId {
     UncPath(windows::core::HSTRING),
     #[cfg(target_os = "linux")]
     DevPath(std::path::PathBuf),
+    #[cfg(target_os = "macos")]
+    RegistryEntryId(u64)
 }
 assert_impl_all!(DeviceId: Send, Sync, Unpin);
 
