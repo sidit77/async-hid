@@ -1,8 +1,12 @@
-use crate::backend::Backend;
+use crate::backend::{Backend, BackendType, DynBackend};
+use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
+use futures_core::Stream;
+use futures_lite::StreamExt;
 use static_assertions::assert_impl_all;
 use std::hash::Hash;
+use std::ops::Deref;
+use std::sync::Arc;
 use windows::core::HSTRING;
-//pub struct BackendProvider(Arc<dyn Backend>)
 
 
 #[non_exhaustive]
@@ -48,4 +52,54 @@ impl DeviceInfo {
     pub fn matches(&self, usage_page: u16, usage_id: u16, vendor_id: u16, product_id: u16) -> bool {
         self.usage_page == usage_page && self.usage_id == usage_id && self.vendor_id == vendor_id && self.product_id == product_id
     }
+}
+
+#[derive(Default, Clone)]
+pub struct HidBackend(Arc<DynBackend>);
+
+impl HidBackend {
+    pub fn new(backend: BackendType) -> Self {
+        Self(Arc::new(DynBackend::new(backend)))
+    }
+    
+    pub async fn enumerate(&self) -> HidResult<impl Stream<Item = Device> + Send + Unpin + '_> {
+        let steam = self.0
+            .enumerate()
+            .await?
+            .map(|info| Device { backend: self.0.clone(), device_info: info });
+        Ok(steam)
+    }
+    
+}
+
+pub struct Device {
+    backend: Arc<DynBackend>,
+    device_info: DeviceInfo,
+}
+
+impl Deref for Device {
+    type Target = DeviceInfo;
+
+    fn deref(&self) -> &Self::Target {
+        &self.device_info
+    }
+}
+
+impl Device {
+
+    pub async fn open_readable(&self) -> HidResult<DeviceReader> {
+        let (r, _) = self.backend.open(&self.id, true, false).await?;
+        Ok(DeviceReader(r.unwrap()))
+    }
+
+    pub async fn open_writeable(&self) -> HidResult<DeviceWriter> {
+        let (_, w) = self.backend.open(&self.id, false, true).await?;
+        Ok(DeviceWriter(w.unwrap()))
+    }
+
+    pub async fn open(&self) -> HidResult<DeviceReaderWriter> {
+        let (r, w) = self.backend.open(&self.id, true, true).await?;
+        Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
+    }
+
 }

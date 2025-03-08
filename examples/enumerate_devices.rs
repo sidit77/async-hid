@@ -1,4 +1,4 @@
-use async_hid::{DeviceInfo, HidResult};
+use async_hid::{HidBackend, HidResult};
 use futures_lite::stream::StreamExt;
 use log::LevelFilter;
 use simple_logger::SimpleLogger;
@@ -10,7 +10,8 @@ async fn main() -> HidResult<()> {
         .init()
         .unwrap();
 
-    DeviceInfo::enumerate()
+    HidBackend::default()
+        .enumerate()
         .await?
         .for_each(|device| {
             println!(

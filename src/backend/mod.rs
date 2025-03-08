@@ -2,8 +2,6 @@ use crate::{DeviceInfo, HidResult};
 use std::fmt::{Debug};
 use std::future::Future;
 use std::hash::Hash;
-use std::sync::Arc;
-use futures_core::Stream;
 use futures_core::stream::BoxStream;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 use crate::device_info::DeviceId;
@@ -58,7 +56,7 @@ macro_rules! dyn_backend_impl {
             )+
         }
         
-        enum DynReader {
+        pub enum DynReader {
             $(
                 $(#[$module_attrs])*$(#[$item_attrs])*
                 $name(<$backend as Backend>::Reader),
@@ -75,7 +73,7 @@ macro_rules! dyn_backend_impl {
             }
         }
         
-        enum DynWriter {
+        pub enum DynWriter {
             $(
                 $(#[$module_attrs])*$(#[$item_attrs])*
                 $name(<$backend as Backend>::Writer),
@@ -146,13 +144,14 @@ dyn_backend_impl! {
 }
 
 impl Default for DynBackend {
+    #[allow(unreachable_code)]
     fn default() -> Self {
-        if cfg!(target_os = "windows") {
-            if cfg!(feature = "win32") {
-                return Self::new(BackendType::Win32);
-            } else if cfg!(feature = "winrt") {
-                return Self::new(BackendType::WinRt);
-            }
+        #[cfg(target_os = "windows")]
+        {
+            #[cfg(feature = "win32")]
+            return Self::new(BackendType::Win32);
+            #[cfg(feature = "winrt")]
+            return Self::new(BackendType::WinRt);
         }
         panic!("No suitable backend found");
     }
