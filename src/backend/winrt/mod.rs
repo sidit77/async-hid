@@ -11,20 +11,22 @@ use windows::Storage::FileAccessMode;
 use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResultExt};
 use crate::error::{HidResult};
 use crate::{ensure, AsyncHidRead, AsyncHidWrite, Backend, DeviceInfo, HidError};
+use crate::backend::DeviceInfoStream;
+use crate::device_info::DeviceId;
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
 );
 
-
+#[derive(Default)]
 pub struct WinRtBackend;
 
 impl Backend for WinRtBackend {
-    type DeviceId = HSTRING;
+    // type DeviceId = HSTRING;
     type Reader = InputReceiver;
     type Writer = HidDevice;
 
-    async fn enumerate() -> HidResult<impl Stream<Item=DeviceInfo<Self>> + Unpin + Send>{
+    async fn enumerate(&self) -> HidResult<DeviceInfoStream>{
         let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?
             .await?;
         let devices = DeviceInformationSteam::from(devices)
@@ -35,14 +37,18 @@ impl Backend for WinRtBackend {
                     .flatten()
             });
 
-        Ok(devices)
+        Ok(devices.boxed())
     }
 
-    async fn open(id: &Self::DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let mode = match (read, write) {
             (true, false) => FileAccessMode::Read,
             (_, true) => FileAccessMode::ReadWrite,
             (false, false) => panic!("Not supported")
+        };
+        let id = match id {
+            DeviceId::UncPath(path) => path,
+            _ => panic!("Unsupported device id")
         };
         let device = HidDevice::FromIdAsync(id, mode)?
             .await
@@ -56,7 +62,7 @@ impl Backend for WinRtBackend {
     }
 }
 
-async fn get_device_information(device: DeviceInformation) -> HidResult<Option<DeviceInfo<WinRtBackend>>> {
+async fn get_device_information(device: DeviceInformation) -> HidResult<Option<DeviceInfo>> {
     let id = device.Id()?;
     let name = device.Name()?.to_string_lossy();
     let device = HidDevice::FromIdAsync(&id, FileAccessMode::Read)?;
@@ -64,7 +70,7 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<Option<D
         return Ok(None);
     };
     Ok(Some(DeviceInfo {
-        id,
+        id: DeviceId::UncPath(id),
         name,
         product_id: device.ProductId()?,
         vendor_id: device.VendorId()?,
