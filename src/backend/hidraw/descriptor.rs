@@ -41,14 +41,11 @@ struct UsageIterator<'a> {
     cursor: Cursor<&'a Vec<u8>>
 }
 
-impl<'a> Iterator for UsageIterator<'a> {
+impl Iterator for UsageIterator<'_> {
     type Item = (u16, u16);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (usage_page, page) = match next_hid_usage(&mut self.cursor, self.usage_page) {
-            Some(n) => n,
-            None => return None
-        };
+        let (usage_page, page) = next_hid_usage(&mut self.cursor, self.usage_page)?;
 
         self.usage_page = usage_page;
         Some((usage_page, page))
@@ -68,10 +65,7 @@ fn next_hid_usage(cursor: &mut Cursor<&Vec<u8>>, mut usage_page: u16) -> Option<
         let position = cursor.position() - 1;
         let key_cmd = key & 0xfc;
 
-        let (data_len, key_size) = match hid_item_size(key, cursor) {
-            Some(v) => v,
-            None => return None
-        };
+        let (data_len, key_size) = hid_item_size(key, cursor)?;
 
         match key_cmd {
             // Usage Page 6.2.2.7 (Global)

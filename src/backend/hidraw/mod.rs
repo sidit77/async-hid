@@ -37,9 +37,7 @@ impl Backend for HidRawBackend {
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
-        let id = match id {
-            DeviceId::DevPath(id) => id
-        };
+        let DeviceId::DevPath(id) = id;
         
         let fd: OwnedFd = OpenOptions::new()
             .read(read)
