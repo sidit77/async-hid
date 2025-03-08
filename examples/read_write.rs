@@ -1,4 +1,4 @@
-use async_hid::{DeviceInfo, HidError, HidResult, AsyncHidRead, AsyncHidWrite, HidBackend, Device};
+use async_hid::{AsyncHidRead, AsyncHidWrite, Device, HidBackend, HidError, HidResult};
 use futures_lite::StreamExt;
 use simple_logger::SimpleLogger;
 
@@ -14,12 +14,7 @@ async fn main() -> HidResult<()> {
         .inspect(|info| {
             println!(
                 "{}: 0x{:X} 0x{:X} 0x{:X} 0x{:X} {:?}",
-                info.name,
-                info.usage_page,
-                info.usage_id,
-                info.vendor_id,
-                info.product_id,
-                info.id
+                info.name, info.usage_page, info.usage_id, info.vendor_id, info.product_id, info.id
             );
         })
         .expect("Could not find device")
