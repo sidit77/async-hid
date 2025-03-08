@@ -1,20 +1,22 @@
+#![allow(dead_code)]
+
 use std::iter::Fuse;
 
 pub trait TryIterExt<T, E> {
     
-    //fn try_collect_vec(self) -> Result<Vec<T>, E>;
+    fn try_collect_vec(self) -> Result<Vec<T>, E>;
 
     fn try_flatten(self) -> TryFlattenIter<Self, T> where T: IntoIterator, Self: Sized;
 }
 
 impl<T, E, I: Iterator<Item = Result<T, E>>> TryIterExt<T, E> for I {
-    //fn try_collect_vec(self) -> Result<Vec<T>, E> {
-    //    let mut result = Vec::with_capacity(self.size_hint().0);
-    //    for elem in self {
-    //        result.push(elem?);
-    //    }
-    //    Ok(result)
-    //}
+    fn try_collect_vec(self) -> Result<Vec<T>, E> {
+        let mut result = Vec::with_capacity(self.size_hint().0);
+        for elem in self {
+            result.push(elem?);
+        }
+        Ok(result)
+    }
     fn try_flatten(self) -> TryFlattenIter<Self, T> where T: IntoIterator {
         TryFlattenIter {
             inner: self.fuse(),
