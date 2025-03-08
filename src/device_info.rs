@@ -1,19 +1,19 @@
 use crate::backend::{Backend, BackendType, DynBackend};
 use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
-use futures_core::Stream;
+use futures_lite::Stream;
 use futures_lite::StreamExt;
 use static_assertions::assert_impl_all;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::sync::Arc;
-use windows::core::HSTRING;
-
 
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum DeviceId {
     #[cfg(target_os = "windows")]
-    UncPath(HSTRING)
+    UncPath(windows::core::HSTRING),
+    #[cfg(target_os = "linux")]
+    DevPath(std::path::PathBuf),
 }
 assert_impl_all!(DeviceId: Send, Sync, Unpin);
 

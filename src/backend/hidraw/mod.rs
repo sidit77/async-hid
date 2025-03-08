@@ -7,41 +7,41 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use futures_core::Stream;
+use futures_lite::stream::iter;
+use futures_lite::StreamExt;
 use nix::fcntl::OFlag;
 use nix::unistd::{read, write};
 
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
-use crate::backend::hidraw::utils::{iter, TryIterExt};
-use crate::{ensure, DeviceInfo, HidError, HidResult, Backend, AsyncHidRead, AsyncHidWrite};
-
+use crate::backend::hidraw::utils::{TryIterExt};
+use crate::{ensure, DeviceInfo, HidError, HidResult, AsyncHidRead, AsyncHidWrite, DeviceId};
+use crate::backend::{Backend, DeviceInfoStream};
 use crate::backend::hidraw::async_api::{AsyncFd, read_with, write_with};
 use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
 
-#[derive(Clone)]
+#[derive(Default)]
 pub struct HidRawBackend;
 
 impl Backend for HidRawBackend {
-    type DeviceId = PathBuf;
     type Reader = HidDevice;
     type Writer = HidDevice;
 
-    async fn enumerate() -> HidResult<impl Stream<Item=DeviceInfo<Self>> + Unpin + Send> {
+    async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let devices = read_dir("/sys/class/hidraw/")?
             .map(|r| r.map(|e| e.path()))
             .try_collect_vec()?;
         let devices = devices
             .into_iter()
             .map(get_device_info_raw)
-            .filter_map(|r| {
-                r.map_err(|e| log::trace!("Failed to query device information\n\tbecause {e:?}"))
-                    .ok()
-            })
-            .flatten();
-        Ok(iter(devices))
+            .try_flatten();
+        Ok(iter(devices).boxed())
     }
 
-    async fn open(id: &Self::DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        let id = match id {
+            DeviceId::DevPath(id) => id
+        };
+        
         let fd: OwnedFd = OpenOptions::new()
             .read(read)
             .write(write)
@@ -80,7 +80,7 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         .map(str::to_string);
 
     let info = DeviceInfo {
-        id: id.into(),
+        id: DeviceId::DevPath(id),
         name,
         product_id,
         vendor_id,

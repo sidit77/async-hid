@@ -19,11 +19,11 @@ winrt = ["dep:flume", "dep:windows-future"]
 
 [dependencies]
 log = "0.4"
-futures-core = "0.3"
+futures-lite = "2.5"
 static_assertions = "1.1"
 
 [target."cfg(target_os = \"windows\")".dependencies]
-futures-lite = "2.5"
+
 flume = { version = "0.11", optional = true }
 atomic-waker = { version = "1.1.2", optional = true }
 windows-future = { version = "0.1.1", optional = true }
@@ -48,7 +48,7 @@ windows = { version = "0.60.0", features = [
 [target."cfg(target_os = \"linux\")".dependencies]
 tokio = { version = "1", features = ["net"], optional = true }
 async-io = { version = "2", optional = true }
-nix = { version = "0.27", features = ["fs", "ioctl"] }
+nix = { version = "0.29.0", features = ["fs", "ioctl"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
 async-lock = "2"

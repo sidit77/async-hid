@@ -2,18 +2,9 @@ use crate::{DeviceInfo, HidResult};
 use std::fmt::{Debug};
 use std::future::Future;
 use std::hash::Hash;
-use futures_core::stream::BoxStream;
+use futures_lite::stream::Boxed;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 use crate::device_info::DeviceId;
-
-//#[cfg(all(target_os = "windows", feature = "win32"))]
-//mod win32;
-
-//#[cfg(all(target_os = "windows", feature = "winrt"))]
-//mod winrt;
-
-#[cfg(target_os = "linux")]
-mod hidraw;
 
 #[cfg(target_os = "macos")]
 mod iohidmanager;
@@ -21,7 +12,7 @@ mod iohidmanager;
 pub use iohidmanager::{enumerate, open, BackendDevice, BackendDeviceId, BackendError, BackendPrivateData};
 
 
-pub type DeviceInfoStream = BoxStream<'static, HidResult<DeviceInfo>>;
+pub type DeviceInfoStream = Boxed<HidResult<DeviceInfo>>;
 pub trait Backend: Sized + Default {
     type Reader: AsyncHidRead + Send + Sync;
     type Writer: AsyncHidWrite + Send + Sync;
@@ -140,6 +131,10 @@ dyn_backend_impl! {
     #[cfg(all(target_os = "windows", feature = "winrt"))]
     mod winrt {
         WinRt(winrt::WinRtBackend)
+    }
+    #[cfg(target_os = "linux")]
+    mod hidraw {
+        HidRaw(hidraw::HidRawBackend)
     }
 }
 
