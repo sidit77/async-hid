@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use atomic_waker::AtomicWaker;
 use log::{trace, warn};
-use static_assertions::assert_not_impl_all;
 use windows::Win32::Foundation::{BOOLEAN, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Threading::{RegisterWaitForSingleObject, UnregisterWaitEx, INFINITE, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE};
 use crate::HidResult;
@@ -139,7 +138,7 @@ impl<'a> Future for HandleFuture<'a> {
     }
 }
 
-impl<'a> Drop for HandleFuture<'a> {
+impl Drop for HandleFuture<'_> {
     fn drop(&mut self) {
         if self.state == FutureState::Initialized {
             if self.inner.is_registered() {

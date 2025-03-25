@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::mem::{forget, take, ManuallyDrop};
+use std::mem::ManuallyDrop;
 use std::sync::{Arc};
 use log::{debug, error, trace, warn};
 use windows::core::HRESULT;
