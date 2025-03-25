@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use std::mem::{forget, take};
+use std::mem::{forget, take, ManuallyDrop};
 use std::sync::{Arc};
 use log::{debug, error, trace, warn};
 use windows::core::HRESULT;
@@ -9,7 +9,7 @@ use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::CreateEventW;
 use crate::backend::win32::device::Device;
-use crate::backend::win32::waiter::WaitableHandleFuture;
+use crate::backend::win32::waiter::HandleWaiter;
 use crate::HidResult;
 
 #[derive(Debug)]
@@ -20,8 +20,8 @@ pub struct Writable;
 
 pub struct IoBuffer<T> {
     device: Arc<Device>,
-    buffer: Box<[u8]>,
-    overlapped: Box<Overlapped>,
+    buffer: ManuallyDrop<Box<[u8]>>,
+    overlapped: ManuallyDrop<Overlapped>,
     pending: bool,
     _marker: PhantomData<T>,
 }
@@ -36,10 +36,12 @@ impl<T> Debug for IoBuffer<T> {
 
 impl<T> IoBuffer<T> {
     pub fn new(device: Arc<Device>, size: usize) -> HidResult<Self> {
+        let overlapped = Overlapped::new()?;
+        let buffer = vec![0; size].into_boxed_slice();
         Ok(IoBuffer {
             device,
-            buffer: vec![0; size].into_boxed_slice(),
-            overlapped: Box::new(Overlapped::new()?),
+            buffer: ManuallyDrop::new(buffer),
+            overlapped: ManuallyDrop::new(overlapped),
             pending: false,
             _marker: PhantomData,
         })
@@ -49,7 +51,7 @@ impl<T> IoBuffer<T> {
         where F: FnOnce(&Device, &mut [u8], &mut Overlapped) -> windows::core::Result<()>
     {
         assert!(!self.pending, "I/O operation already pending");
-        let result = operation(&self.device, &mut self.buffer, self.overlapped.as_mut());
+        let result = operation(&self.device, &mut self.buffer, &mut self.overlapped);
         match result {
             Ok(_) => { self.pending = true; }
             Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
@@ -99,11 +101,14 @@ impl<T> Drop for IoBuffer<T> {
     fn drop(&mut self) {
         if self.pending {
             trace!("Canceling pending I/O operation");
+            // SAFETY: If canceling the I/O operation fails, the buffer and overlapped structures are leaked before we panic to make sure they stay valid even after `Self` gets freed.
             if let Err(err) = self.cancel_io() {
-                // SAFETY: If canceling the I/O operation fails, the buffer and overlapped structures are leaked before we panic to make sure they stay valid even after `Self` gets freed.
-                forget(take(&mut self.buffer));
-                forget(take(&mut self.overlapped));
                 panic!("Failed to cancel I/O operation: {:?}", err);
+            } else {
+                unsafe {
+                    ManuallyDrop::drop(&mut self.buffer);
+                    ManuallyDrop::drop(&mut self.overlapped);
+                }
             }
         }
     }
@@ -199,28 +204,33 @@ impl IoBuffer<Writable> {
 
 }
 
-#[derive(Default)]
-#[repr(transparent)]
-struct Overlapped(OVERLAPPED);
+struct Overlapped {
+    inner: *mut OVERLAPPED,
+    waiter: HandleWaiter
+}
 
 impl Overlapped {
     pub fn new() -> HidResult<Self> {
-        Ok(Overlapped(OVERLAPPED {
-            hEvent: unsafe { CreateEventW(None, false, false, None)? },
-            ..Default::default()
-        }))
+        let event = unsafe { CreateEventW(None, false, false, None)? };
+        Ok(Overlapped{
+            inner: Box::into_raw(Box::new(OVERLAPPED {
+                hEvent: event,
+                ..Default::default()
+            })),
+            waiter: HandleWaiter::new(event)
+        })
     }
 
-    pub async fn wait_for_completion(&self) -> HidResult<()> {
-        WaitableHandleFuture::new(self.0.hEvent).await
+    pub async fn wait_for_completion(&mut self) -> HidResult<()> {
+        self.waiter.wait().await
     }
 
     pub fn as_raw(&self) -> *const OVERLAPPED {
-        &self.0
+        self.inner
     }
 
     pub fn as_raw_mut(&mut self) -> *mut OVERLAPPED {
-        &mut self.0
+        self.inner
     }
 
 }
@@ -230,6 +240,7 @@ unsafe impl Sync for Overlapped {}
 
 impl Drop for Overlapped {
     fn drop(&mut self) {
-        unsafe { CloseHandle(self.0.hEvent).unwrap_or_else(|err| warn!("Failed to close handle: {err}")) };
+        let inner = unsafe { Box::from_raw(self.inner) };
+        unsafe { CloseHandle(inner.hEvent).unwrap_or_else(|err| warn!("Failed to close handle: {err}")) };
     }
 }
