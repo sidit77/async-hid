@@ -4,12 +4,17 @@ use crate::backend::{Backend, DynBackend};
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 use crate::HidResult;
 
+/// A reader than can be used to read input reports from a HID device using [AsyncHidRead::read_input_report]
 #[repr(transparent)]
 pub struct DeviceReader(pub(crate) <DynBackend as Backend>::Reader);
 
+/// A writer than can be used to write output reports from a HID device using [AsyncHidWrite::write_output_report]
 #[repr(transparent)]
 pub struct DeviceWriter(pub(crate) <DynBackend as Backend>::Writer);
 
+/// Combination of [DeviceReader] and [DeviceWriter]
+///
+/// Can either be destructured or used directly
 pub type DeviceReaderWriter = (DeviceReader, DeviceWriter);
 
 impl AsyncHidRead for DeviceReader {

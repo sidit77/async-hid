@@ -7,6 +7,7 @@ mod error;
 mod traits;
 mod utils;
 
+/// All available backends for the current platform
 pub use backend::BackendType;
 pub use device::{DeviceReader, DeviceReaderWriter, DeviceWriter};
 pub use device_info::{Device, DeviceId, DeviceInfo, HidBackend};

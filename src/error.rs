@@ -2,8 +2,11 @@ use std::borrow::Cow;
 use std::fmt::{Debug, Display, Formatter};
 use std::panic::Location;
 
+/// Specialized result type used for many functions in this library
 pub type HidResult<T> = Result<T, HidError>;
 
+/// The main error type of this library
+/// Currently mostly a wrapper around a platform specific error
 #[derive(Debug)]
 pub enum HidError {
     Message(Cow<'static, str>),

@@ -8,6 +8,23 @@ use static_assertions::assert_impl_all;
 use crate::backend::{Backend, BackendType, DynBackend};
 use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
 
+/// A platform-specific identifier for a device.
+///
+/// Can be used as opaque type for equality checks or inspected with platform specific code:
+/// ```no_run
+/// # use async_hid::DeviceId;
+/// let id: DeviceId = /* ... */
+/// # panic!();
+/// match(id) {
+///    #[cfg(target_os = "windows")]
+///     DeviceId::UncPath(path) => { /* .. */ },
+///     #[cfg(target_os = "linux")]
+///     DeviceId::DevPath(path) => { /* .. */ },
+///     #[cfg(target_os = "macos")]
+///     DeviceId::RegistryEntryId(id) => { /* .. */ }
+///     _ => {}
+/// }
+/// ```
 #[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub enum DeviceId {
@@ -22,7 +39,7 @@ assert_impl_all!(DeviceId: Send, Sync, Unpin);
 
 /// A struct containing basic information about a device
 ///
-/// This struct is part of a [Device] and can be obtained by calling [DeviceInfo::enumerate].
+/// This struct is part of [Device].
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct DeviceInfo {
     /// OS specific identifier
@@ -49,10 +66,13 @@ impl DeviceInfo {
     }
 }
 
+/// The main entry point of this library
 #[derive(Default, Clone)]
 pub struct HidBackend(Arc<DynBackend>);
 
 impl HidBackend {
+    /// Create a specific backend.
+    /// If you don't care and want to just use the default backend for each platform consider calling [HidBackend::default] instead
     pub fn new(backend: BackendType) -> Self {
         Self(Arc::new(DynBackend::new(backend)))
     }
@@ -72,7 +92,7 @@ impl HidBackend {
     }
 }
 
-/// and upgraded into a usable [Device] by calling [DeviceInfo::open]
+/// A HID device that was detected by calling [HidBackend::enumerate]
 pub struct Device {
     backend: Arc<DynBackend>,
     device_info: DeviceInfo
@@ -87,16 +107,20 @@ impl Deref for Device {
 }
 
 impl Device {
+    /// Open the device in read-only mode
     pub async fn open_readable(&self) -> HidResult<DeviceReader> {
         let (r, _) = self.backend.open(&self.id, true, false).await?;
         Ok(DeviceReader(r.unwrap()))
     }
 
+    /// Open the device in write-only mode
+    /// Note: Not all backends support this mode and might upgrade the permission to read+write behind the scenes
     pub async fn open_writeable(&self) -> HidResult<DeviceWriter> {
         let (_, w) = self.backend.open(&self.id, false, true).await?;
         Ok(DeviceWriter(w.unwrap()))
     }
 
+    /// Open the device in read and write mode
     pub async fn open(&self) -> HidResult<DeviceReaderWriter> {
         let (r, w) = self.backend.open(&self.id, true, true).await?;
         Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
