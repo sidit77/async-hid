@@ -1,6 +1,6 @@
 [package]
 name = "async-hid"
-version = "0.2.1"
+version = "0.3.0"
 authors = [ "sidit77" ]
 repository = "https://github.com/sidit77/async-hid"
 description = "A async library for interacting with HID devices"
@@ -25,8 +25,8 @@ static_assertions = "1.1"
 [target."cfg(target_os = \"windows\")".dependencies]
 flume = { version = "0.11", optional = true }
 atomic-waker = { version = "1.1.2", optional = true }
-windows-future = { version = "0.1.1", optional = true }
-windows = { version = "0.60.0", features = [
+windows-future = { version = "0.2.0", optional = true }
+windows = { version = "0.61.1", features = [
     "Devices_Enumeration",
     "Devices_HumanInterfaceDevice",
     "Foundation",
