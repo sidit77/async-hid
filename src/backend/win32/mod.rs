@@ -4,132 +4,117 @@ mod waiter;
 mod buffer;
 mod string;
 mod interface;
-mod mutex;
 
-use std::sync::{Arc};
+use std::future::Future;
+use std::sync::Arc;
 
-use futures_lite::Stream;
+use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
+use crate::backend::win32::device::Device;
+use crate::backend::{Backend, DeviceInfoStream};
+use crate::device_info::DeviceId;
+use crate::error::HidResult;
+use crate::traits::{AsyncHidRead, AsyncHidWrite};
+use crate::{DeviceInfo, HidError};
 use futures_lite::stream::iter;
-use windows::core::{HRESULT};
+use futures_lite::StreamExt;
+use interface::Interface;
+use windows::core::{HRESULT, HSTRING, PCWSTR};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, CONFIGRET};
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
-use crate::error::{ErrorSource, HidResult};
-use crate::{ensure, AccessMode, DeviceId, DeviceInfo, HidError, SerialNumberExt};
-use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
-use crate::backend::win32::device::Device;
-use interface::Interface;
-use crate::backend::win32::mutex::SimpleMutex;
-use crate::backend::win32::string::{U16Str, U16String};
 
-pub async fn enumerate() -> HidResult<impl Stream<Item = DeviceInfo> + Unpin + Send> {
-    let devices = Interface::get_interface_list()?
-        .iter()
-        .filter_map(|i| {
-            get_device_information(i)
-                .map_err(|e| log::trace!("Failed to query device information for {i:?}\n\tbecause {e}"))
-                .ok()
-        })
-        .collect::<Vec<_>>();
-    Ok(iter(devices))
-}
+#[derive(Default)]
+pub struct Win32Backend;
 
-impl SerialNumberExt for DeviceInfo {
-    fn serial_number(&self) -> Option<&str> {
-        self.private_data
-            .serial_number
-            .as_ref()
-            .map(String::as_str)
+impl Backend for Win32Backend {
+    
+    type Reader = IoBuffer<Readable>;
+    type Writer = IoBuffer<Writable>;
+
+    async fn enumerate(&self) -> HidResult<DeviceInfoStream>{
+        let device_ids = Interface::get_interface_list()?
+            .iter()
+            .map(HSTRING::from)
+            .collect::<Vec<_>>();
+        let device_infos = device_ids
+            .into_iter()
+            .map(get_device_information);
+        Ok(iter(device_infos).boxed())
+    }
+
+    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        let id = match id {
+            DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
+        };
+        let device = Arc::new(Device::open(id, read, write)?);
+
+        if read {
+            check_error(unsafe { HidD_SetNumInputBuffers(device.handle(), 64) })?;
+        }
+
+        let caps = device.preparsed_data()?.caps()?;
+
+        let read_buffer = match read {
+            true => Some(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?),
+            false => None
+        };
+        let write_buffer = match write {
+            true => Some(IoBuffer::<Writable>::new(device.clone(), caps.OutputReportByteLength as usize)?),
+            false => None
+        };
+        Ok((read_buffer, write_buffer))
     }
 }
 
-fn get_device_information(device: &U16Str) -> HidResult<DeviceInfo> {
-    let id = device.to_owned();
-    let device = Device::open(device.as_ptr(), None)?;
+fn get_device_information(id: HSTRING) -> HidResult<DeviceInfo> {
+    let device = Device::open(PCWSTR(id.as_ptr()), false, false)?;
     let name = device.name()?;
     let attribs = device.attributes()?;
     let caps = device.preparsed_data()?.caps()?;
-    let serial_number = device.serial_number().ok();
+    let serial_number = device.serial_number();
     Ok(DeviceInfo {
-        id: DeviceId::from(id),
+        id: DeviceId::UncPath(id),
         name,
         product_id: attribs.ProductID,
         vendor_id: attribs.VendorID,
         usage_id: caps.Usage,
         usage_page: caps.UsagePage,
-        private_data: BackendPrivateData {
-            serial_number
-        }
+        serial_number
     })
 }
 
+impl AsyncHidRead for IoBuffer<Readable> {
 
-#[derive(Debug)]
-pub struct BackendDevice {
-    read_buffer: SimpleMutex<IoBuffer<Readable>>,
-    write_buffer: SimpleMutex<IoBuffer<Writable>>,
-}
-
-pub async fn open(id: &BackendDeviceId, mode: AccessMode) -> HidResult<BackendDevice> {
-    let device = Arc::new(Device::open(id.as_ptr(), Some(mode))?);
-
-    unsafe {
-        HidD_SetNumInputBuffers(device.handle(), 64).ok()?;
-    }
-    let caps = device.preparsed_data()?.caps()?;
-
-    let read_buffer = SimpleMutex::new(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?);
-    let write_buffer = SimpleMutex::new(IoBuffer::<Writable>::new(device, caps.OutputReportByteLength as usize)?);
-    Ok(BackendDevice {
-        read_buffer,
-        write_buffer,
-    })
-}
-
-impl BackendDevice {
-    pub async fn read_input_report(&self, buf: &mut [u8]) -> HidResult<usize> {
-        match self.read_buffer.try_lock() {
-            Some(mut buffer) => {
-                let len = buffer.read(buf).await?;
-                Ok(len)
-            },
-            None => Err(HidError::custom("Another read operation is in progress"))
-        }
-    }
-
-    pub async fn write_output_report(&self, buf: &[u8]) -> HidResult<()> {
-        ensure!(!buf.is_empty(), HidError::zero_sized_data());
-        match self.write_buffer.try_lock() {
-            Some(mut buffer) => {
-                buffer.write(buf).await?;
-                Ok(())
-            },
-            None => Err(HidError::custom("Another write operation is in progress"))
-        }
+    #[inline]
+    fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output=HidResult<usize>> + Send + 'a {
+        self.read(buf)
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BackendPrivateData {
-    serial_number: Option<String>
-}
+impl AsyncHidWrite for IoBuffer<Writable> {
 
-pub type BackendDeviceId = U16String;
-pub type BackendError = windows::core::Error;
-
-impl From<BackendError> for ErrorSource {
-    fn from(value: BackendError) -> Self {
-        ErrorSource::PlatformSpecific(value)
+    #[inline]
+    fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output=HidResult<()>> + Send + 'a {
+        self.write(buf)
     }
 }
 
-impl From<CONFIGRET> for ErrorSource {
+pub fn check_error(result: bool) -> windows::core::Result<()> {
+    if result {
+        Ok(())
+    } else {
+        Err(windows::core::Error::from_win32())
+    }
+}
+
+impl From<CONFIGRET> for HidError {
+    #[track_caller]
     fn from(value: CONFIGRET) -> Self {
         const UNKNOWN_ERROR: u32 = 0xFFFF;
         let hresult = match unsafe { CM_MapCrToWin32Err(value, UNKNOWN_ERROR) } {
             UNKNOWN_ERROR => E_FAIL,
             win32 => HRESULT::from_win32(win32),
         };
-        ErrorSource::PlatformSpecific(windows::core::Error::from(hresult))
+        HidError::from(windows::core::Error::from(hresult))
     }
 }
