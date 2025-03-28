@@ -6,6 +6,7 @@ mod device_info;
 mod error;
 mod traits;
 mod utils;
+mod report;
 
 /// All available backends for the current platform
 pub use backend::BackendType;
@@ -13,6 +14,7 @@ pub use device::{DeviceReader, DeviceReaderWriter, DeviceWriter};
 pub use device_info::{Device, DeviceId, DeviceInfo, HidBackend};
 use static_assertions::assert_impl_all;
 pub use traits::{AsyncHidRead, AsyncHidWrite};
+pub use report::Report;
 
 pub use crate::error::{HidError, HidResult};
 

@@ -1,4 +1,4 @@
-use async_hid::{AsyncHidRead, AsyncHidWrite, Device, HidBackend, HidError, HidResult};
+use async_hid::{AsyncHidRead, AsyncHidWrite, Device, HidBackend, HidError, HidResult, Report};
 use futures_lite::StreamExt;
 use simple_logger::SimpleLogger;
 
@@ -21,7 +21,7 @@ async fn main() -> HidResult<()> {
         .open()
         .await?;
 
-    device.write_output_report(&[0x0, 0xb0]).await?;
+    device.write_output_report(&mut Report::from_bytes(None, &[0xb0])).await?;
     let mut buffer = [0u8; 8];
     let size = device.read_input_report(&mut buffer).await?;
     println!("{:?}", &buffer[..size]);

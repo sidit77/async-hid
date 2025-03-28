@@ -10,7 +10,7 @@ use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::CreateEventW;
 use crate::backend::win32::device::Device;
 use crate::backend::win32::waiter::HandleWaiter;
-use crate::HidResult;
+use crate::{HidResult, Report};
 
 #[derive(Debug)]
 pub struct Readable;
@@ -20,7 +20,8 @@ pub struct Writable;
 
 pub struct IoBuffer<T> {
     device: Arc<Device>,
-    buffer: ManuallyDrop<Box<[u8]>>,
+    buffer_size: usize,
+    buffer: ManuallyDrop<Vec<u8>>,
     overlapped: ManuallyDrop<Overlapped>,
     pending: bool,
     _marker: PhantomData<T>,
@@ -29,6 +30,7 @@ pub struct IoBuffer<T> {
 impl<T> Debug for IoBuffer<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IoBuffer")
+            .field("size", &self.buffer_size)
             .field("pending", &self.pending)
             .finish_non_exhaustive()
     }
@@ -37,9 +39,10 @@ impl<T> Debug for IoBuffer<T> {
 impl<T> IoBuffer<T> {
     pub fn new(device: Arc<Device>, size: usize) -> HidResult<Self> {
         let overlapped = Overlapped::new()?;
-        let buffer = vec![0; size].into_boxed_slice();
+        let buffer = vec![0; size];
         Ok(IoBuffer {
             device,
+            buffer_size: size,
             buffer: ManuallyDrop::new(buffer),
             overlapped: ManuallyDrop::new(overlapped),
             pending: false,
@@ -185,17 +188,15 @@ impl IoBuffer<Writable> {
         })
     }
 
-    pub async fn write(&mut self, data: &[u8]) -> HidResult<()> {
+    pub async fn write(&mut self, data: &mut Report) -> HidResult<()> {
         self.wait_for_write_to_complete().await.unwrap_or_else(|err| error!("Abandoned write failed: {err}"));
-
-        trace!("Filling write buffer with data");
-        let mut data_size = data.len();
-        if data_size > self.buffer.len() {
-            debug!("Data size ({}) exceeds maximum buffer size ({}), truncating data", data_size, self.buffer.len());
-            data_size = self.buffer.len();
+        
+        trace!("Swapping write buffers");
+        std::mem::swap(&mut data.0, &mut self.buffer);
+        if self.buffer.len() > self.buffer_size {
+            debug!("Report size ({}) exceeds maximum buffer size ({}), truncating data", self.buffer.len(), self.buffer_size);
         }
-        self.buffer[data_size..].fill(0);
-        self.buffer[..data_size].copy_from_slice(&data[..data_size]);
+        self.buffer.resize(self.buffer_size, 0);
 
         self.start_write()?;
         self.wait_for_write_to_complete().await?;

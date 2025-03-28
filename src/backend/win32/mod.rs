@@ -14,7 +14,7 @@ use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
-use crate::{DeviceInfo, HidError};
+use crate::{DeviceInfo, HidError, Report};
 use futures_lite::stream::iter;
 use futures_lite::StreamExt;
 use interface::Interface;
@@ -94,7 +94,7 @@ impl AsyncHidRead for IoBuffer<Readable> {
 impl AsyncHidWrite for IoBuffer<Writable> {
 
     #[inline]
-    fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output=HidResult<()>> + Send + 'a {
+    fn write_output_report<'a>(&'a mut self, buf: &'a mut Report) -> impl Future<Output=HidResult<()>> + Send + 'a {
         self.write(buf)
     }
 }

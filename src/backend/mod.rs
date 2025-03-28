@@ -6,7 +6,7 @@ use futures_lite::stream::Boxed;
 
 use crate::device_info::DeviceId;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
-use crate::{DeviceInfo, HidResult};
+use crate::{DeviceInfo, HidResult, Report};
 
 pub type DeviceInfoStream = Boxed<HidResult<DeviceInfo>>;
 pub trait Backend: Sized + Default {
@@ -67,7 +67,7 @@ macro_rules! dyn_backend_impl {
             )+
         }
         impl AsyncHidWrite for DynWriter {
-            async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
+            async fn write_output_report<'a>(&'a mut self, buf: &'a mut Report) -> HidResult<()> {
                 match self {
                     $(
                         $(#[$module_attrs])*$(#[$item_attrs])*
