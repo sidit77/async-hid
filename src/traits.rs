@@ -28,7 +28,8 @@ pub trait AsyncHidWrite {
     /*
     TODO:
         - Guarantee that a potential replacement buffer has the same size as the buffers returned by `get_empty_report`
-        - Introduce flag in Report to indicate that it's content might've changed?
+        - Introduce a flag in Report to indicate that it's content might've changed?
+        - Introduce a flag or alternative function to disable buffer swapping an force a potential copy?
         - Guarantee that the report id of the replacement buffer matches the report id of the input buffer?
      */
 }
