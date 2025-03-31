@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::fmt::{Debug, Display, Formatter};
 use std::panic::Location;
-use windows::Win32::Foundation::ERROR_IO_INCOMPLETE;
 
 /// Specialized result type used for many functions in this library
 pub type HidResult<T> = Result<T, HidError>;
@@ -11,6 +10,7 @@ pub type HidResult<T> = Result<T, HidError>;
 #[derive(Debug)]
 pub enum HidError {
     Disconnected,
+    NotConnected,
     Message(Cow<'static, str>),
     Other(Box<dyn std::error::Error + Send + Sync>)
 }
@@ -33,7 +33,8 @@ impl Display for HidError {
         match self {
             HidError::Message(msg) => f.write_str(msg),
             HidError::Other(err) => Display::fmt(err, f),
-            HidError::Disconnected => f.write_str("The device is disconnected"),
+            HidError::Disconnected => f.write_str("The device was disconnected"),
+            HidError::NotConnected => f.write_str("The device is not connected"),
         }
     }
 }
