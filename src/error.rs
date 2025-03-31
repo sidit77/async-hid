@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::fmt::{Debug, Display, Formatter};
 use std::panic::Location;
+use windows::Win32::Foundation::ERROR_IO_INCOMPLETE;
 
 /// Specialized result type used for many functions in this library
 pub type HidResult<T> = Result<T, HidError>;
@@ -9,6 +10,7 @@ pub type HidResult<T> = Result<T, HidError>;
 /// Currently mostly a wrapper around a platform specific error
 #[derive(Debug)]
 pub enum HidError {
+    Disconnected,
     Message(Cow<'static, str>),
     Other(Box<dyn std::error::Error + Send + Sync>)
 }
@@ -30,7 +32,8 @@ impl Display for HidError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             HidError::Message(msg) => f.write_str(msg),
-            HidError::Other(err) => Display::fmt(err, f)
+            HidError::Other(err) => Display::fmt(err, f),
+            HidError::Disconnected => f.write_str("The device is disconnected"),
         }
     }
 }
@@ -55,7 +58,11 @@ impl From<std::io::Error> for HidError {
 impl From<windows::core::Error> for HidError {
     #[track_caller]
     fn from(error: windows::core::Error) -> Self {
-        HidError::from_backend(error)
+        const DISCONNECTED: windows::core::HRESULT = windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED.0);
+        match error.code() {
+            DISCONNECTED => HidError::Disconnected,
+            _ => HidError::from_backend(error)
+        }
     }
 }
 
