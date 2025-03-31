@@ -3,10 +3,10 @@ use std::future::Future;
 use std::hash::Hash;
 
 use futures_lite::stream::Boxed;
-
+use futures_lite::StreamExt;
 use crate::device_info::DeviceId;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
-use crate::{DeviceInfo, HidResult};
+use crate::{DeviceEvent, DeviceInfo, HidResult};
 
 pub type DeviceInfoStream = Boxed<HidResult<DeviceInfo>>;
 pub trait Backend: Sized + Default {
@@ -14,6 +14,9 @@ pub trait Backend: Sized + Default {
     type Writer: AsyncHidWrite + Send + Sync;
 
     fn enumerate(&self) -> impl Future<Output = HidResult<DeviceInfoStream>> + Send;
+    fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
+        Ok(futures_lite::stream::pending().boxed())
+    }
 
     #[allow(clippy::type_complexity)]
     fn open(&self, id: &DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
@@ -103,6 +106,15 @@ macro_rules! dyn_backend_impl {
                     $(
                         $(#[$module_attrs])*$(#[$item_attrs])*
                         Self::$name(i) => i.enumerate().await,
+                    )+
+                }
+            }
+            
+            fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
+                match self {
+                    $(
+                        $(#[$module_attrs])*$(#[$item_attrs])*
+                        Self::$name(i) => i.watch(),
                     )+
                 }
             }

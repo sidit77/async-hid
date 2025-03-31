@@ -10,7 +10,7 @@ mod utils;
 /// All available backends for the current platform
 pub use backend::BackendType;
 pub use device::{DeviceReader, DeviceReaderWriter, DeviceWriter};
-pub use device_info::{Device, DeviceId, DeviceInfo, HidBackend};
+pub use device_info::{Device, DeviceId, DeviceInfo, HidBackend, DeviceEvent};
 use static_assertions::assert_impl_all;
 pub use traits::{AsyncHidRead, AsyncHidWrite};
 
