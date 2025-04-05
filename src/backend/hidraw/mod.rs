@@ -10,7 +10,7 @@ use std::process;
 use std::sync::Arc;
 use futures_lite::stream::{iter, unfold, Boxed};
 use futures_lite::{StreamExt};
-use log::trace;
+use log::{debug, trace, warn};
 use nix::fcntl::OFlag;
 use nix::sys::socket::{bind, recvfrom, socket, AddressFamily, NetlinkAddr, SockFlag, SockProtocol, SockType};
 use nix::unistd::{read, write};
@@ -49,9 +49,21 @@ impl Backend for HidRawBackend {
         
         Ok(unfold((AsyncFd::new(socket)?, vec![0u8; 4096]), |(socket, mut buf)| async move {
             loop {
-                let (size, _) = read_with(&socket, |fd| recvfrom::<NetlinkAddr>(fd.as_raw_fd(), &mut buf).map_err(std::io::Error::from)).await.unwrap();
+                let size = match read_with(&socket, |fd| recvfrom::<NetlinkAddr>(fd.as_raw_fd(), &mut buf).map_err(std::io::Error::from)).await {
+                    Ok((size, _)) => size,
+                    Err(err) => {
+                        warn!("Reading uevent failed: {}", err);
+                        continue;
+                    }
+                };
 
-                let event = UEvent::parse(&buf[0..size]).unwrap();
+                let event = match UEvent::parse(&buf[0..size]) { 
+                    Ok(event) => event,
+                    Err(reason) => {
+                        debug!("Failed to parse uevent: {}", reason);
+                        continue;
+                    }
+                };
                 
                 if event.subsystem != "hidraw" {
                     continue;

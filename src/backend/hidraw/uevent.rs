@@ -1,4 +1,3 @@
-use crate::{HidError, HidResult};
 use std::path::Path;
 
 pub enum Action<'a> {
@@ -14,12 +13,12 @@ pub struct UEvent<'a> {
 }
 
 impl<'a> UEvent<'a> {
-    pub fn parse(event: &'a [u8]) -> HidResult<UEvent<'a>> {
+    pub fn parse(event: &'a [u8]) -> Result<UEvent<'a>, &'static str> {
         let mut action = None;
         let mut subsystem = None;
         let mut dev_path = None;
         
-        for line in std::str::from_utf8(event).map_err(HidError::from_backend)?.split('\0') {
+        for line in std::str::from_utf8(event).map_err(|_| "Invalid utf-8")?.split('\0') {
             if let Some((key, value)) = line.split_once('=') {
                 match key {
                     "ACTION" => action = Some(match value {
@@ -35,9 +34,9 @@ impl<'a> UEvent<'a> {
         }
         
         Ok(UEvent {
-            action: action.ok_or(HidError::message("Event action not found"))?,
-            subsystem: subsystem.ok_or(HidError::message("Event subsystem not found"))?,
-            dev_path: dev_path.ok_or(HidError::message("Event device path not found"))?,
+            action: action.ok_or("Event action not found")?,
+            subsystem: subsystem.ok_or("Event subsystem not found")?,
+            dev_path: dev_path.ok_or("Event device path not found")?,
         })
     }
 }
