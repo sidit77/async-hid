@@ -27,7 +27,9 @@ impl Backend for HidRawBackend {
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let devices = read_dir("/sys/class/hidraw/")?
-            .map(|r| r.map(|e| e.path()))
+            .map(|r| r
+                .map(|e| e.path())
+                .and_then(|p| p.canonicalize()))
             .try_collect_vec()?;
         let devices = devices
             .into_iter()
@@ -38,12 +40,17 @@ impl Backend for HidRawBackend {
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let DeviceId::DevPath(id) = id;
+
+        let properties = read_to_string(id.join("uevent"))?;
+        let id = read_property(&properties, "DEVNAME")
+            .ok_or(HidError::message("Can't find dev name"))
+            .and_then(mange_dev_name)?;
         
         let fd: OwnedFd = OpenOptions::new()
             .read(read)
             .write(write)
             .custom_flags((OFlag::O_CLOEXEC | OFlag::O_NONBLOCK).bits())
-            .open(id)?
+            .open(&id)?
             .into();
 
         let mut size = 0i32;
@@ -57,11 +64,6 @@ impl Backend for HidRawBackend {
 }
 
 fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
-    let properties = read_to_string(path.join("uevent"))?;
-    let id = read_property(&properties, "DEVNAME")
-        .ok_or(HidError::message("Can't find dev name"))
-        .and_then(mange_dev_name)?;
-
     let properties = read_to_string(path.join("device/uevent"))?;
 
     let (_bus, vendor_id, product_id) = read_property(&properties, "HID_ID")
@@ -77,7 +79,7 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         .map(str::to_string);
 
     let info = DeviceInfo {
-        id: DeviceId::DevPath(id),
+        id: DeviceId::DevPath(path.clone()),
         name,
         product_id,
         vendor_id,
