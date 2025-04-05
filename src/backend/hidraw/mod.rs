@@ -1,22 +1,24 @@
 mod descriptor;
 mod ioctl;
 
+use futures_lite::stream::iter;
+use futures_lite::StreamExt;
+use nix::fcntl::OFlag;
+use nix::libc::EIO;
+use nix::unistd::{read, write};
 use std::fs::{read_dir, read_to_string, OpenOptions};
+use std::io::ErrorKind;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use futures_lite::stream::iter;
-use futures_lite::StreamExt;
-use nix::fcntl::OFlag;
-use nix::unistd::{read, write};
 
+use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
+use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
+use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
 use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceId, DeviceInfo, HidError, HidResult};
-use crate::backend::{Backend, DeviceInfoStream};
-use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
-use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
 
 #[derive(Default)]
 pub struct HidRawBackend;
@@ -43,7 +45,11 @@ impl Backend for HidRawBackend {
             .read(read)
             .write(write)
             .custom_flags((OFlag::O_CLOEXEC | OFlag::O_NONBLOCK).bits())
-            .open(id)?
+            .open(id)
+            .map_err(|err| match err {
+                err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
+                err => err.into(),
+            })?
             .into();
 
         let mut size = 0i32;
@@ -140,7 +146,10 @@ impl AsyncHidRead for HidDevice {
     async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
         read_with(&self.0, |fd| read(fd.as_raw_fd(), buf).map_err(std::io::Error::from))
             .await
-            .map_err(HidError::from)
+            .map_err(|err| match err {
+                err if err.raw_os_error() == Some(EIO) => HidError::Disconnected,
+                err => err.into(),
+            })
     }
 }
 
@@ -148,7 +157,10 @@ impl AsyncHidWrite for HidDevice {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
         write_with(&self.0, |fd| write(fd, buf).map_err(std::io::Error::from))
             .await
-            .map_err(HidError::from)
+            .map_err(|err| match err {
+                err if err.raw_os_error() == Some(EIO) => HidError::Disconnected,
+                err => err.into(),
+            })
             .map(|i| debug_assert_eq!(i, buf.len()))
     }
 }
@@ -158,8 +170,8 @@ compile_error!("Only tokio or async-io can be active at the same time");
 
 #[cfg(feature = "async-io")]
 mod async_api {
-    use std::os::fd::OwnedFd;
     use async_io::Async;
+    use std::os::fd::OwnedFd;
 
     pub type AsyncFd = Async<OwnedFd>;
 
