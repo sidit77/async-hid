@@ -59,6 +59,14 @@ impl From<windows::core::Error> for HidError {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl From<nix::errno::Errno> for HidError {
+    #[track_caller]
+    fn from(error: nix::errno::Errno) -> Self {
+        HidError::from_backend(nix::Error::from(error))
+    }
+}
+
 #[doc(hidden)]
 #[macro_export]
 macro_rules! ensure {

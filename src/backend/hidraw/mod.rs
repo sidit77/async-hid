@@ -1,22 +1,27 @@
 mod descriptor;
 mod ioctl;
+mod uevent;
 
 use std::fs::{read_dir, read_to_string, OpenOptions};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::Arc;
-use futures_lite::stream::iter;
-use futures_lite::StreamExt;
+use futures_lite::stream::{iter, unfold, Boxed};
+use futures_lite::{StreamExt};
+use log::trace;
 use nix::fcntl::OFlag;
+use nix::sys::socket::{bind, recvfrom, socket, AddressFamily, NetlinkAddr, SockFlag, SockProtocol, SockType};
 use nix::unistd::{read, write};
 
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
 use crate::utils::TryIterExt;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
+use crate::backend::hidraw::uevent::{Action, UEvent};
 
 #[derive(Default)]
 pub struct HidRawBackend;
@@ -36,6 +41,35 @@ impl Backend for HidRawBackend {
             .map(get_device_info_raw)
             .try_flatten();
         Ok(iter(devices).boxed())
+    }
+
+    fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
+        let socket = socket(AddressFamily::Netlink, SockType::Datagram, SockFlag::SOCK_CLOEXEC, SockProtocol::NetlinkKObjectUEvent)?;
+        bind(socket.as_raw_fd(), &NetlinkAddr::new(process::id(), 1))?;
+        
+        Ok(unfold((AsyncFd::new(socket)?, vec![0u8; 4096]), |(socket, mut buf)| async move {
+            loop {
+                let (size, _) = read_with(&socket, |fd| recvfrom::<NetlinkAddr>(fd.as_raw_fd(), &mut buf).map_err(std::io::Error::from)).await.unwrap();
+
+                let event = UEvent::parse(&buf[0..size]).unwrap();
+                
+                if event.subsystem != "hidraw" {
+                    continue;
+                }
+                
+                let id = DeviceId::DevPath(event.dev_path.to_path_buf());
+                let event = match event.action {
+                    Action::Add => DeviceEvent::Connected(id),
+                    Action::Remove => DeviceEvent::Disconnected(id),
+                    Action::Other(a) => {
+                        trace!("Unknown hidraw event: {}", a);
+                        continue;
+                    }
+                };
+                
+                return Some((event, (socket, buf)));
+            }
+        }).boxed())
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
@@ -61,6 +95,8 @@ impl Backend for HidRawBackend {
         
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
+    
+    
 }
 
 fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {

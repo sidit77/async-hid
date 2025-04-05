@@ -9,7 +9,7 @@ async fn main() -> HidResult<()> {
     let mut device = HidBackend::default()
         .enumerate()
         .await?
-        .find(|info| info.matches(0x1, 0x1, 0x46D, 0xC016))
+        .find(|info| info.matches(0x1, 0x1, 0x62A, 0x5918))
         .await
         //.find(|info| info.matches(0xFF00, 0x1, 0x1038, 0x2206))
         .expect("Could not find device")
