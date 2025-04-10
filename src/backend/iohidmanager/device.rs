@@ -45,7 +45,8 @@ impl TryFrom<RegistryEntryId> for IOHIDDevice {
 
     fn try_from(value: RegistryEntryId) -> Result<Self, Self::Error> {
         unsafe {
-            let service = IOService::try_from(value)?;
+            let service = IOService::try_from(value)
+                .map_err(|_| HidError::NotConnected)?;
             let device = IOHIDDeviceCreate(kCFAllocatorDefault, service.raw());
             ensure!(!device.is_null(), HidError::message(format!("Failed to open device at port {:?}", value)));
             Ok(IOHIDDevice::wrap_under_create_rule(device))
