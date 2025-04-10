@@ -21,7 +21,7 @@ use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::iohidmanager::runloop::RunLoop;
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
 use crate::backend::iohidmanager::utils::{CFDictionaryExt};
-use crate::{AsyncHidRead, AsyncHidWrite, DeviceId, DeviceInfo, HidResult};
+use crate::{AsyncHidRead, AsyncHidWrite, DeviceId, DeviceInfo, HidError, HidResult};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
 
@@ -158,7 +158,9 @@ impl Drop for BackendDevice {
     fn drop(&mut self) {
         self.device
             .close(self.open_options)
-            .unwrap_or_else(|err| log::warn!("Failed to close IOHIDDevice\n\t{err:?}"));
+            .err()
+            .filter(|err| !matches!(*err, HidError::Disconnected))
+            .inspect(|err| log::warn!("Failed to close IOHIDDevice\n\t{err:?}"));
     }
 }
 

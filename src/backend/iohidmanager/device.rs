@@ -1,10 +1,3 @@
-use std::ffi::c_void;
-use std::future::{poll_fn, Future};
-use std::mem::ManuallyDrop;
-use std::ptr::null_mut;
-use std::slice::from_raw_parts;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::task::Poll;
 use atomic_waker::AtomicWaker;
 use core_foundation::base::{kCFAllocatorDefault, CFIndex, CFRelease, CFType, TCFType};
 use core_foundation::number::CFNumber;
@@ -15,8 +8,15 @@ use crossbeam_queue::ArrayQueue;
 use io_kit_sys::hid::base::{IOHIDCallback, IOHIDDeviceRef, IOHIDReportCallback};
 use io_kit_sys::hid::device::{IOHIDDeviceClose, IOHIDDeviceCreate, IOHIDDeviceGetProperty, IOHIDDeviceGetTypeID, IOHIDDeviceOpen, IOHIDDeviceScheduleWithRunLoop, IOHIDDeviceSetReport, IOHIDDeviceUnscheduleFromRunLoop};
 use io_kit_sys::hid::keys::{kIOHIDMaxInputReportSizeKey, IOHIDReportType};
-use io_kit_sys::ret::{kIOReturnSuccess, IOReturn};
+use io_kit_sys::ret::{kIOReturnBadArgument, kIOReturnSuccess, IOReturn};
 use io_kit_sys::types::IOOptionBits;
+use std::ffi::c_void;
+use std::future::{poll_fn, Future};
+use std::mem::ManuallyDrop;
+use std::ptr::null_mut;
+use std::slice::from_raw_parts;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
 
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
 use crate::backend::iohidmanager::utils::Key;
@@ -94,18 +94,18 @@ impl IOHIDDevice {
         //TODO check for kIOReturnNotPermitted
         ensure!(
             ret == kIOReturnSuccess,
-            HidError::message(format!("failed to open IOHIDDevice: {:?}", ret))
+            HidError::message(format!("failed to open IOHIDDevice: {:#X}", ret))
         );
         Ok(())
     }
 
     pub fn close(&self, options: IOOptionBits) -> HidResult<()> {
-        let ret = unsafe { IOHIDDeviceClose(self.as_concrete_TypeRef(), options) };
-        ensure!(
-            ret == kIOReturnSuccess,
-            HidError::message(format!("failed to close IOHIDDevice: {:?}", ret))
-        );
-        Ok(())
+        #[allow(non_upper_case_globals)]
+        match unsafe { IOHIDDeviceClose(self.as_concrete_TypeRef(), options) } {
+            kIOReturnSuccess => Ok(()),
+            kIOReturnBadArgument => Err(HidError::Disconnected),
+            other => Err(HidError::message(format!("failed to close IOHIDDevice: {:#X}", other))),
+        }
     }
 
     pub fn schedule_with_runloop(&self, runloop: &CFRunLoop, mode: &CFString) {
@@ -122,9 +122,12 @@ impl IOHIDDevice {
 
     pub fn set_report(&self, report_type: IOHIDReportType, report_id: CFIndex, report: &[u8]) -> HidResult<()> {
         //TODO make this async using IOHIDDeviceSetReportWithCallback
-        let ret = unsafe { IOHIDDeviceSetReport(self.as_concrete_TypeRef(), report_type, report_id, report.as_ptr(), report.len() as _) };
-        ensure!(ret == kIOReturnSuccess, HidError::message(format!("Failed to send report: {}", ret)));
-        Ok(())
+        #[allow(non_upper_case_globals)]
+        match unsafe { IOHIDDeviceSetReport(self.as_concrete_TypeRef(), report_type, report_id, report.as_ptr(), report.len() as _) } {
+            kIOReturnSuccess => Ok(()),
+            kIOReturnBadArgument => Err(HidError::Disconnected),
+            other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
+        }
     }
 
 }
