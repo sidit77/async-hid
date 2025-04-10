@@ -1,14 +1,18 @@
 use std::ffi::c_void;
+use std::future::{poll_fn, Future};
 use std::mem::ManuallyDrop;
 use std::ptr::null_mut;
 use std::slice::from_raw_parts;
-
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
+use atomic_waker::AtomicWaker;
 use core_foundation::base::{kCFAllocatorDefault, CFIndex, CFRelease, CFType, TCFType};
 use core_foundation::number::CFNumber;
 use core_foundation::runloop::CFRunLoop;
 use core_foundation::string::CFString;
 use core_foundation::{impl_TCFType, ConcreteCFType};
-use io_kit_sys::hid::base::{IOHIDDeviceRef, IOHIDReportCallback};
+use crossbeam_queue::ArrayQueue;
+use io_kit_sys::hid::base::{IOHIDCallback, IOHIDDeviceRef, IOHIDReportCallback};
 use io_kit_sys::hid::device::{IOHIDDeviceClose, IOHIDDeviceCreate, IOHIDDeviceGetProperty, IOHIDDeviceGetTypeID, IOHIDDeviceOpen, IOHIDDeviceScheduleWithRunLoop, IOHIDDeviceSetReport, IOHIDDeviceUnscheduleFromRunLoop};
 use io_kit_sys::hid::keys::{kIOHIDMaxInputReportSizeKey, IOHIDReportType};
 use io_kit_sys::ret::{kIOReturnSuccess, IOReturn};
@@ -21,6 +25,7 @@ use crate::{ensure, HidError, HidResult};
 extern "C" {
     // Workaround for https://github.com/jtakakura/io-kit-rs/issues/6
     fn IOHIDDeviceRegisterInputReportCallback(device: IOHIDDeviceRef, report: *mut u8, report_length: CFIndex, callback: Option<IOHIDReportCallback>, context: *mut c_void);
+    fn IOHIDDeviceRegisterRemovalCallback(device: IOHIDDeviceRef, callback: Option<IOHIDCallback>, context: *mut c_void);
 }
 
 #[derive(Debug)]
@@ -116,78 +121,126 @@ impl IOHIDDevice {
     }
 
     pub fn set_report(&self, report_type: IOHIDReportType, report_id: CFIndex, report: &[u8]) -> HidResult<()> {
+        //TODO make this async using IOHIDDeviceSetReportWithCallback
         let ret = unsafe { IOHIDDeviceSetReport(self.as_concrete_TypeRef(), report_type, report_id, report.as_ptr(), report.len() as _) };
         ensure!(ret == kIOReturnSuccess, HidError::message(format!("Failed to send report: {}", ret)));
         Ok(())
     }
 
-    pub fn register_input_report_callback<F>(&self, callback: F) -> HidResult<CallbackGuard>
-        where
-            F: FnMut(&[u8]) + Send + Sync + 'static
-    {
-        let max_input_report_len = self.get_i32_property(kIOHIDMaxInputReportSizeKey)? as usize;
+}
+
+
+pub struct AsyncReportReader {
+    inner: *const AsyncReportReaderInner,
+    device: IOHIDDevice,
+    report_buffer: ManuallyDrop<Vec<u8>>,
+}
+
+impl AsyncReportReader {
+
+    pub fn new(device: &IOHIDDevice) -> HidResult<AsyncReportReader> {
+        let max_input_report_len = device.get_i32_property(kIOHIDMaxInputReportSizeKey)? as usize;
 
         let mut report_buffer = ManuallyDrop::new(vec![0u8; max_input_report_len]);
 
-        let (report_buffer_ptr, report_buffer_len, report_buffer_capacity) = (report_buffer.as_mut_ptr(), report_buffer.len(), report_buffer.capacity());
-
-        let callback: InputReportCallback = Box::new(callback);
-        let callback: InputReportCallbackContainer = Box::new(callback);
-
-        let callback_ptr = Box::into_raw(callback);
+        let inner = Box::into_raw(Box::new(AsyncReportReaderInner::default()));
 
         unsafe {
+            IOHIDDeviceRegisterRemovalCallback(device.as_concrete_TypeRef(), Some(AsyncReportReaderInner::hid_removal_callback), inner as _);
             IOHIDDeviceRegisterInputReportCallback(
-                self.as_concrete_TypeRef(),
-                report_buffer_ptr as _,
-                report_buffer_len as _,
-                Some(hid_report_callback),
-                callback_ptr as _,
+                device.as_concrete_TypeRef(),
+                report_buffer.as_mut_ptr() as _,
+                report_buffer.len() as _,
+                Some(AsyncReportReaderInner::hid_report_callback),
+                inner as _,
             );
         }
 
-        Ok(CallbackGuard {
-            device: self.clone(),
-            report_buffer_ptr,
-            report_buffer_len,
-            report_buffer_capacity,
-            callback_ptr,
+        Ok(AsyncReportReader {
+            device: device.clone(),
+            report_buffer,
+            inner,
         })
     }
+
+    pub fn read<'a>(&'a self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + 'a {
+        poll_fn(|cx| {
+            let inner = unsafe { &*self.inner };
+            inner.waker.register(cx.waker());
+            match inner.full_buffers.pop() {
+                Some(report) => {
+                    let length = report.len().min(buf.len());
+                    buf[..length].copy_from_slice(&report[..length]);
+                    inner.recycle_buffer(report);
+                    Poll::Ready(Ok(length))
+                }
+                None => match inner.removed.load(Ordering::Relaxed) {
+                    true => Poll::Ready(Err(HidError::Disconnected)),
+                    false => Poll::Pending,
+                }
+            }
+        })
+    }
+
 }
 
-type InputReportCallback = Box<dyn FnMut(&[u8]) + Send + Sync>;
-type InputReportCallbackContainer = Box<InputReportCallback>;
+unsafe impl Send for AsyncReportReader {}
+unsafe impl Sync for AsyncReportReader {}
 
-#[must_use = "The callback will be unregistered when the returned guard is dropped"]
-pub struct CallbackGuard {
-    device: IOHIDDevice,
-    report_buffer_ptr: *mut u8,
-    report_buffer_len: usize,
-    report_buffer_capacity: usize,
-    callback_ptr: *mut InputReportCallback,
-}
-
-unsafe impl Send for CallbackGuard {}
-unsafe impl Sync for CallbackGuard {}
-
-impl Drop for CallbackGuard {
+impl Drop for AsyncReportReader {
     fn drop(&mut self) {
         unsafe {
+            IOHIDDeviceRegisterRemovalCallback(self.device.as_concrete_TypeRef(), None, null_mut());
             IOHIDDeviceRegisterInputReportCallback(self.device.as_concrete_TypeRef(), null_mut(), 0, None, null_mut())
         }
 
-        drop(unsafe { Vec::<u8>::from_raw_parts(self.report_buffer_ptr, self.report_buffer_len, self.report_buffer_capacity) });
-
-        drop(unsafe { InputReportCallbackContainer::from_raw(self.callback_ptr) });
+        unsafe { ManuallyDrop::drop(&mut self.report_buffer) };
+        unsafe { drop(Box::<AsyncReportReaderInner>::from_raw(self.inner as *mut _)) };
     }
 }
 
-unsafe extern "C" fn hid_report_callback(
-    context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: *mut u8,
-    report_length: CFIndex
-) {
-    let callback: &mut InputReportCallback = &mut *(context as *mut InputReportCallback);
-    let data = from_raw_parts(report, report_length as usize);
-    callback(data);
+struct AsyncReportReaderInner {
+    full_buffers: ArrayQueue<Vec<u8>>,
+    empty_buffers: ArrayQueue<Vec<u8>>,
+    removed: AtomicBool,
+    waker: AtomicWaker,
+}
+
+impl Default for AsyncReportReaderInner {
+    fn default() -> Self {
+        Self {
+            full_buffers: ArrayQueue::new(64),
+            empty_buffers: ArrayQueue::new(8),
+            removed: AtomicBool::new(false),
+            waker: AtomicWaker::new(),
+        }
+    }
+}
+
+impl AsyncReportReaderInner {
+
+    fn recycle_buffer(&self, buf: Vec<u8>) {
+        let _ = self.empty_buffers.push(buf);
+    }
+
+    unsafe extern "C" fn hid_report_callback(
+        context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: *mut u8,
+        report_length: CFIndex
+    ) {
+        let this: &Self = &*(context as *mut Self);
+        let mut buffer = this.empty_buffers.pop().unwrap_or(Vec::new());
+        buffer.resize(report_length as usize, 0);
+        buffer.copy_from_slice(from_raw_parts(report, report_length as usize));
+        if let Some(old) = this.full_buffers.force_push(buffer) {
+            this.recycle_buffer(old);
+        }
+        this.waker.wake();
+    }
+
+    unsafe extern "C" fn hid_removal_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void) {
+        let this: &Self = &*(context as *mut Self);
+        this.removed.store(true, Ordering::Relaxed);
+        this.waker.wake();
+    }
+
 }

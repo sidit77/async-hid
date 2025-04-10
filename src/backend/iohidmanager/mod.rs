@@ -6,8 +6,6 @@ mod utils;
 
 use std::sync::Arc;
 
-use async_channel::{bounded, Receiver, TrySendError};
-use bytes::{BufMut, Bytes, BytesMut};
 use core_foundation::array::CFArray;
 use core_foundation::base::TCFType;
 use core_foundation::dictionary::CFDictionary;
@@ -18,12 +16,12 @@ use futures_lite::StreamExt;
 use io_kit_sys::hid::keys::*;
 use io_kit_sys::types::IOOptionBits;
 
-use crate::backend::iohidmanager::device::{CallbackGuard, IOHIDDevice};
+use crate::backend::iohidmanager::device::{AsyncReportReader, IOHIDDevice};
 use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::iohidmanager::runloop::RunLoop;
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
 use crate::backend::iohidmanager::utils::{CFDictionaryExt};
-use crate::{AsyncHidRead, AsyncHidWrite, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::{AsyncHidRead, AsyncHidWrite, DeviceId, DeviceInfo, HidResult};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
 
@@ -113,33 +111,19 @@ fn get_device_infos(device: IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
 pub struct InputReceiver {
     device: Arc<BackendDevice>,
     run_loop: Arc<RunLoop>,
-    _callback: CallbackGuard,
-    read_channel: Receiver<Bytes>
+    reader: AsyncReportReader,
 }
 
 impl InputReceiver {
     async fn new(device: Arc<BackendDevice>) -> HidResult<Self> {
-        let mut byte_buffer = BytesMut::with_capacity(1024);
-        let (sender, receiver) = bounded(64);
-
-        let drain = receiver.clone();
-        let callback = device.device.register_input_report_callback(move |report| {
-            byte_buffer.put(report);
-            let mut bytes = byte_buffer.split().freeze();
-            while let Err(TrySendError::Full(ret)) = sender.try_send(bytes) {
-                log::trace!("Dropping previous input report because the queue is full");
-                let _ = drain.try_recv();
-                bytes = ret;
-            }
-        })?;
+        let reader = AsyncReportReader::new(&device.device)?;
         let run_loop = RunLoop::get_run_loop().await?;
         run_loop.schedule_device(&device.device)?;
 
         Ok(Self {
             device,
             run_loop,
-            _callback: callback,
-            read_channel: receiver
+            reader
         })
     }
 
@@ -150,23 +134,12 @@ impl InputReceiver {
         let default_mode = unsafe { CFString::wrap_under_create_rule(kCFRunLoopDefaultMode) };
         device.schedule_with_runloop(&CFRunLoop::get_main(), &default_mode);
     }
-
-    async fn recv(&self) -> HidResult<Bytes> {
-        self.read_channel
-            .recv()
-            .await
-            .map_err(|_| HidError::message("Input report callback got dropped unexpectedly"))
-    }
+    
 }
 
 impl AsyncHidRead for InputReceiver {
     async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
-        let bytes = self
-            .recv()
-            .await?;
-        let length = bytes.len().min(buf.len());
-        buf[..length].copy_from_slice(&bytes[..length]);
-        Ok(length)
+        self.reader.read(buf).await
     }
 }
 
