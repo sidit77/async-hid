@@ -1,13 +1,17 @@
 mod utils;
 
-use flume::{Receiver, TrySendError};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use async_channel::{Receiver, Sender, WeakSender};
 use futures_lite::{StreamExt};
-use windows::core::{h, Ref, HSTRING};
-use windows::Devices::Enumeration::{DeviceInformation};
+use log::{debug, trace};
+use once_cell::sync::OnceCell;
+use windows::core::{h, Ref, HRESULT, HSTRING};
+use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationUpdate, DeviceWatcher};
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{TypedEventHandler};
 use windows::Storage::FileAccessMode;
-
+use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResultExt};
 use crate::error::{HidResult};
 use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceInfo, HidError};
@@ -19,7 +23,16 @@ const DEVICE_SELECTOR: &HSTRING = h!(
 );
 
 #[derive(Default)]
-pub struct WinRtBackend;
+struct DeviceWatcherContext {
+    next_id: AtomicU64,
+    active_readers: Mutex<Vec<(u64, HSTRING, WeakSender<HidInputReport>)>>
+}
+
+#[derive(Default, Clone)]
+pub struct WinRtBackend {
+    context: Arc<DeviceWatcherContext>,
+    watcher: Arc<OnceCell<DeviceWatcher>>
+}
 
 impl Backend for WinRtBackend {
     // type DeviceId = HSTRING;
@@ -45,10 +58,12 @@ impl Backend for WinRtBackend {
         let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, mode)?
             .await
-            .extract_null()?
-            .ok_or_else(|| HidError::message(format!("Failed to open {}", id)))?;
+            .map_err(|err| match err {
+                e if e.code().is_ok() || e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
+                e => e.into()
+            })?;
         let input = match read {
-            true => Some(InputReceiver::new(device.clone())?),
+            true => Some(InputReceiver::new(self, id, device.clone())?),
             false => None
         };
         Ok((input, read.then_some(device)))
@@ -74,36 +89,27 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<Option<D
     }))
 }
 
-#[derive(Debug, Clone)]
 pub struct InputReceiver {
+    backend: WinRtBackend,
     device: HidDevice,
     buffer: Receiver<HidInputReport>,
-    token: i64
+    token: i64,
+    watcher_registration: u64
 }
 
 impl InputReceiver {
-    fn new(device: HidDevice) -> HidResult<Self> {
-        let (sender, receiver) = flume::bounded(64);
-        let drain = receiver.clone();
+    fn new(backend: &WinRtBackend, id: &HSTRING, device: HidDevice) -> HidResult<Self> {
+        let (sender, receiver) = async_channel::bounded(64);
+        let watcher_registration = backend.register_active_reader(id.clone(), &sender)?;
         let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: Ref<HidInputReportReceivedEventArgs>| {
+            debug!("{:?}", args.as_ref());
             if let Some(args) = args.as_ref() {
-                let mut msg = args.Report()?;
-                while let Err(TrySendError::Full(ret)) = sender.try_send(msg) {
-                    log::trace!("Dropping previous input report because the queue is full");
-                    let _ = drain.try_recv();
-                    msg = ret;
-                }
+                let msg = args.Report()?;
+                let _ = sender.force_send(msg);
             }
             Ok(())
         }))?;
-        Ok(Self { device, buffer: receiver, token })
-    }
-
-    async fn recv_async(&self) -> HidInputReport {
-        self.buffer
-            .recv_async()
-            .await
-            .expect("Input report handler got dropped unexpectedly")
+        Ok(Self { backend: backend.clone(), device, buffer: receiver, token, watcher_registration })
     }
     
 }
@@ -113,14 +119,17 @@ impl Drop for InputReceiver {
         self.device
             .RemoveInputReportReceived(self.token)
             .unwrap_or_else(|err| log::warn!("Failed to unregister input report callback\n\t{err:?}"));
+        self.backend
+            .unregister_active_reader(self.watcher_registration);
     }
 }
 
 impl AsyncHidRead for InputReceiver {
     async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
-        let report = self
-            .recv_async()
-            .await;
+        let report = self.buffer
+            .recv()
+            .await
+            .map_err(|_| HidError::Disconnected)?;
         let buffer = report.Data()?;
         let buffer = buffer.as_slice()?;
         ensure!(!buffer.is_empty(), HidError::message("Input report is empty"));
@@ -149,4 +158,72 @@ impl AsyncHidWrite for HidDevice {
     }
 }
 
+impl WinRtBackend {
 
+    fn initialize_watcher(&self) -> HidResult<()> {
+        let _initialized = self.watcher.get_or_try_init(|| {
+            let watcher = DeviceInformation::CreateWatcherAqsFilter(DEVICE_SELECTOR)?;
+
+            watcher.Removed(&TypedEventHandler::new({
+                let ctx = self.context.clone();
+                move |_, info: Ref<DeviceInformationUpdate>| {
+                    let info = info.ok()?;
+                    let id = info.Id()?;
+                    trace!("device removed: {:?}", id);
+                    ctx
+                        .active_readers
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .retain(|(reg, rid, channel)| match rid == &id {
+                            true => {
+                                if let Some(channel) = channel.upgrade() {
+                                    trace!("Force close channel of reader {}", reg);
+                                    channel.close();
+                                }
+                                false
+                            }
+                            false => true
+                        });
+                    Ok(())
+                }
+            }))?;
+
+            debug!("Starting device watcher");
+            watcher.Start()?;
+
+            Ok::<_, HidError>(watcher)
+        })?;
+
+        Ok(())
+    }
+
+    fn register_active_reader(&self, id: HSTRING, sender: &Sender<HidInputReport>) -> HidResult<u64> {
+        self.initialize_watcher()?;
+        let registration = self
+            .context
+            .next_id
+            .fetch_add(1, Ordering::Relaxed);
+        let mut readers = self.context
+            .active_readers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        readers.push((registration, id, sender.downgrade()));
+        trace!("Registered active reader with device watcher (id: {}, number of registered readers: {})", registration, readers.len());
+        Ok(registration)
+    }
+
+    fn unregister_active_reader(&self, registration: u64) {
+        let mut readers = self.context
+            .active_readers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let count = readers.len();
+        readers.retain(|(id, _, _)| *id != registration);
+        if readers.len() == count {
+            trace!("Reader {} was already removed from the device watcher", registration);
+        } else {
+            trace!("Unregistered reader {} from the device watcher", registration);
+        }
+    }
+
+}
