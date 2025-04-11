@@ -134,7 +134,6 @@ impl InputReceiver {
         let (sender, receiver) = async_channel::bounded(64);
         let watcher_registration = backend.register_active_reader(id.clone(), &sender)?;
         let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: Ref<HidInputReportReceivedEventArgs>| {
-            debug!("{:?}", args.as_ref());
             if let Some(args) = args.as_ref() {
                 let msg = args.Report()?;
                 let _ = sender.force_send(msg);
