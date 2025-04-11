@@ -66,6 +66,13 @@ impl DeviceInfo {
     }
 }
 
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub enum DeviceEvent {
+    Connected(DeviceId),
+    Disconnected(DeviceId),
+}
+
+
 /// The main entry point of this library
 #[derive(Default, Clone)]
 pub struct HidBackend(Arc<DynBackend>);
@@ -90,6 +97,11 @@ impl HidBackend {
         });
         Ok(steam)
     }
+    
+    pub fn watch(&self) -> HidResult<impl Stream<Item = DeviceEvent> + Send + Unpin> {
+        self.0.watch()
+    }
+    
 }
 
 /// A HID device that was detected by calling [HidBackend::enumerate]

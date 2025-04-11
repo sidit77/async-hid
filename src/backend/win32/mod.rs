@@ -14,14 +14,15 @@ use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
-use crate::{DeviceInfo, HidError};
-use futures_lite::stream::iter;
+use crate::{DeviceEvent, DeviceInfo, HidError};
+use futures_lite::stream::{iter, Boxed};
 use futures_lite::StreamExt;
 use interface::Interface;
 use windows::core::{HRESULT, HSTRING, PCWSTR};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, CONFIGRET};
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
+use crate::backend::win32::interface::DeviceNotificationStream;
 
 #[derive(Default)]
 pub struct Win32Backend;
@@ -41,6 +42,11 @@ impl Backend for Win32Backend {
             .map(get_device_information);
         Ok(iter(device_infos).boxed())
     }
+
+    fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
+        Ok(DeviceNotificationStream::new()?.boxed())
+    }
+
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let id = match id {
