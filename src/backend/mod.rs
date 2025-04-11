@@ -119,6 +119,13 @@ macro_rules! dyn_backend_impl {
     };
 }
 
+// Rustfmt doesn't like my macro so we just declare them all with a bogus cfg attribute
+#[cfg(rustfmt)] mod win32;
+#[cfg(rustfmt)] mod winrt;
+#[cfg(rustfmt)] mod hidraw;
+#[cfg(rustfmt)] mod iohidmanager;
+
+
 // Dynamic dispatch doesn't play well with async traits so we just generate a big enum
 // that forwards function calls the correct implementations
 dyn_backend_impl! {
