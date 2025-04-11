@@ -1,9 +1,12 @@
 mod utils;
 
-use flume::{Receiver, TrySendError};
+use std::sync::{Arc, Mutex};
+use async_channel::{Receiver, SendError, Sender};
 use futures_lite::{StreamExt};
+use log::{debug};
+use once_cell::sync::OnceCell;
 use windows::core::{h, Ref, HRESULT, HSTRING};
-use windows::Devices::Enumeration::{DeviceInformation};
+use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationUpdate, DeviceWatcher, DeviceWatcherStatus};
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{TypedEventHandler};
 use windows::Storage::FileAccessMode;
@@ -18,8 +21,58 @@ const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
 );
 
-#[derive(Default)]
-pub struct WinRtBackend;
+struct DeviceWatcherContext {
+    watcher: DeviceWatcher,
+    mutex: Mutex<Vec<(HSTRING, Sender<HidInputReport>)>>
+}
+
+#[derive(Default, Clone)]
+pub struct WinRtBackend {
+    inner: Arc<OnceCell<DeviceWatcherContext>>
+}
+
+impl WinRtBackend {
+    
+    fn get_watcher_context(&self) -> HidResult<&DeviceWatcherContext> {
+        let ctx = self.inner.get_or_try_init(|| {
+            let watcher = DeviceInformation::CreateWatcherAqsFilter(DEVICE_SELECTOR)?;
+            
+            watcher.Removed(&TypedEventHandler::new({
+                let ctx = Arc::downgrade(&self.inner);
+                move |_, info: Ref<DeviceInformationUpdate>| {
+                    let info = info.unwrap();
+                    let id = info.Id()?;
+                    debug!("Removed: {:?}", id);
+                    if let Some(ctx) = ctx.upgrade() {
+                        let inner = ctx.get().expect("Inner should be initialized");
+                        inner.mutex.lock().unwrap().retain(|(rid, channel)| match rid == &id {
+                            true => {
+                                debug!("Force closing channel");
+                                channel.close();
+                                false
+                            }
+                            false => true
+                        });
+                    }
+                    
+                    Ok(())
+                }
+            }))?;
+            Ok::<_, HidError>(DeviceWatcherContext {
+                watcher,
+                mutex: Mutex::new(Default::default()),
+            })
+        })?;
+        
+        if ctx.watcher.Status()? == DeviceWatcherStatus::Created {
+            debug!("starting device watcher");
+            ctx.watcher.Start()?;
+        }
+        
+        Ok(ctx)
+    }
+    
+}
 
 impl Backend for WinRtBackend {
     // type DeviceId = HSTRING;
@@ -50,7 +103,7 @@ impl Backend for WinRtBackend {
                 e => e.into()
             })?;
         let input = match read {
-            true => Some(InputReceiver::new(device.clone())?),
+            true => Some(InputReceiver::new(self, id, device.clone())?),
             false => None
         };
         Ok((input, read.then_some(device)))
@@ -76,36 +129,28 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<Option<D
     }))
 }
 
-#[derive(Debug, Clone)]
 pub struct InputReceiver {
+    _backend: WinRtBackend,
     device: HidDevice,
     buffer: Receiver<HidInputReport>,
     token: i64
 }
 
 impl InputReceiver {
-    fn new(device: HidDevice) -> HidResult<Self> {
-        let (sender, receiver) = flume::bounded(64);
-        let drain = receiver.clone();
+    fn new(backend: &WinRtBackend, id: &HSTRING, device: HidDevice) -> HidResult<Self> {
+        let (sender, receiver) = async_channel::bounded(64);
+        backend.get_watcher_context()?.mutex.lock().unwrap().push((id.clone(), sender.clone()));
         let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: Ref<HidInputReportReceivedEventArgs>| {
+            debug!("{:?}", args.as_ref());
             if let Some(args) = args.as_ref() {
-                let mut msg = args.Report()?;
-                while let Err(TrySendError::Full(ret)) = sender.try_send(msg) {
+                let msg = args.Report()?;
+                if let Err(SendError(_)) = sender.force_send(msg) {
                     log::trace!("Dropping previous input report because the queue is full");
-                    let _ = drain.try_recv();
-                    msg = ret;
                 }
             }
             Ok(())
         }))?;
-        Ok(Self { device, buffer: receiver, token })
-    }
-
-    async fn recv_async(&self) -> HidInputReport {
-        self.buffer
-            .recv_async()
-            .await
-            .expect("Input report handler got dropped unexpectedly")
+        Ok(Self { _backend: backend.clone(), device, buffer: receiver, token })
     }
     
 }
@@ -120,9 +165,10 @@ impl Drop for InputReceiver {
 
 impl AsyncHidRead for InputReceiver {
     async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
-        let report = self
-            .recv_async()
-            .await;
+        let report = self.buffer
+            .recv()
+            .await
+            .map_err(|_| HidError::Disconnected)?;
         let buffer = report.Data()?;
         let buffer = buffer.as_slice()?;
         ensure!(!buffer.is_empty(), HidError::message("Input report is empty"));

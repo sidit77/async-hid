@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use async_hid::{AsyncHidRead, BackendType, HidBackend, HidResult};
+use async_hid::{AsyncHidRead, HidBackend, HidResult};
 use async_io::Timer;
 use futures_lite::{FutureExt, StreamExt};
 use simple_logger::SimpleLogger;
@@ -9,7 +9,7 @@ use simple_logger::SimpleLogger;
 async fn main() -> HidResult<()> {
     SimpleLogger::new().init().unwrap();
 
-    let mut device = HidBackend::new(BackendType::Win32)
+    let mut device = HidBackend::default()
         .enumerate()
         .await?
         .find(|info| info.matches(0xFF00, 0x1, 0x1038, 0x2206))
