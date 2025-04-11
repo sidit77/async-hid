@@ -2,12 +2,12 @@ mod utils;
 
 use flume::{Receiver, TrySendError};
 use futures_lite::{StreamExt};
-use windows::core::{h, Ref, HSTRING};
+use windows::core::{h, Ref, HRESULT, HSTRING};
 use windows::Devices::Enumeration::{DeviceInformation};
 use windows::Devices::HumanInterfaceDevice::{HidDevice, HidInputReport, HidInputReportReceivedEventArgs};
 use windows::Foundation::{TypedEventHandler};
 use windows::Storage::FileAccessMode;
-
+use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResultExt};
 use crate::error::{HidResult};
 use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceInfo, HidError};
@@ -45,8 +45,10 @@ impl Backend for WinRtBackend {
         let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, mode)?
             .await
-            .extract_null()?
-            .ok_or_else(|| HidError::message(format!("Failed to open {}", id)))?;
+            .map_err(|err| match err {
+                e if e.code().is_ok() || e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
+                e => e.into()
+            })?;
         let input = match read {
             true => Some(InputReceiver::new(device.clone())?),
             false => None
