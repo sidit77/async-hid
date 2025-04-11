@@ -33,7 +33,7 @@ pub enum DeviceId {
     #[cfg(target_os = "linux")]
     DevPath(std::path::PathBuf),
     #[cfg(target_os = "macos")]
-    RegistryEntryId(u64)
+    RegistryEntryId(u64),
 }
 assert_impl_all!(DeviceId: Send, Sync, Unpin);
 
@@ -55,7 +55,7 @@ pub struct DeviceInfo {
     /// The HID usage page
     pub usage_page: u16,
     /// The serial number of the device. Might be `None` if the device does not have a serial number or the platform/backend does not support retrieving the serial number.
-    pub serial_number: Option<String>
+    pub serial_number: Option<String>,
 }
 assert_impl_all!(DeviceInfo: Send, Sync, Unpin);
 
@@ -84,9 +84,9 @@ impl HidBackend {
         let steam = self.0.enumerate().await?.filter_map(|result| match result {
             Ok(info) => Some(Device {
                 backend: self.0.clone(),
-                device_info: info
+                device_info: info,
             }),
-            Err(_) => None
+            Err(_) => None,
         });
         Ok(steam)
     }
@@ -95,7 +95,7 @@ impl HidBackend {
 /// A HID device that was detected by calling [HidBackend::enumerate]
 pub struct Device {
     backend: Arc<DynBackend>,
-    device_info: DeviceInfo
+    device_info: DeviceInfo,
 }
 
 impl Deref for Device {

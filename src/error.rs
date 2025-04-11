@@ -12,7 +12,7 @@ pub enum HidError {
     Disconnected,
     NotConnected,
     Message(Cow<'static, str>),
-    Other(Box<dyn std::error::Error + Send + Sync>)
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl HidError {
@@ -43,7 +43,7 @@ impl std::error::Error for HidError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             HidError::Other(err) => Some(err.as_ref()),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -62,7 +62,7 @@ impl From<windows::core::Error> for HidError {
         const DISCONNECTED: windows::core::HRESULT = windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED.0);
         match error.code() {
             DISCONNECTED => HidError::Disconnected,
-            _ => HidError::from_backend(error)
+            _ => HidError::from_backend(error),
         }
     }
 }

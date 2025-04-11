@@ -10,18 +10,18 @@ use core_foundation::array::CFArray;
 use core_foundation::base::TCFType;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
-use core_foundation::string::CFString;
 use futures_lite::stream::iter;
 use futures_lite::StreamExt;
-use io_kit_sys::hid::keys::*;
+use core_foundation::string::CFString;
 use io_kit_sys::types::IOOptionBits;
-
 use crate::backend::iohidmanager::device::{AsyncReportReader, IOHIDDevice};
-use crate::backend::iohidmanager::manager::IOHIDManager;
+
+use io_kit_sys::hid::keys::*;
+use crate::backend::iohidmanager::utils::{CFDictionaryExt};
 use crate::backend::iohidmanager::runloop::RunLoop;
 use crate::backend::iohidmanager::service::{IOService, RegistryEntryId};
-use crate::backend::iohidmanager::utils::{CFDictionaryExt};
 use crate::{AsyncHidRead, AsyncHidWrite, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::backend::iohidmanager::manager::IOHIDManager;
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
 

@@ -21,24 +21,24 @@ impl<T, E, I: Iterator<Item = Result<T, E>>> TryIterExt<T, E> for I {
     }
     fn try_flatten(self) -> TryFlattenIter<Self, T>
     where
-        T: IntoIterator
+        T: IntoIterator,
     {
         TryFlattenIter {
             inner: self.fuse(),
-            current: None
+            current: None,
         }
     }
 }
 
 pub struct TryFlattenIter<I, T: IntoIterator> {
     inner: Fuse<I>,
-    current: Option<T::IntoIter>
+    current: Option<T::IntoIter>,
 }
 
 impl<I, T, E> Iterator for TryFlattenIter<I, T>
 where
     I: Iterator<Item = Result<T, E>>,
-    T: IntoIterator
+    T: IntoIterator,
 {
     type Item = Result<T::Item, E>;
 
@@ -50,7 +50,7 @@ where
             self.current = None;
             match self.inner.next()? {
                 Ok(iter) => self.current = Some(iter.into_iter()),
-                Err(err) => return Some(Err(err))
+                Err(err) => return Some(Err(err)),
             }
         }
     }
@@ -66,7 +66,7 @@ mod tests {
             inner: [Err(0), Ok(vec![1, 2, 3]), Err(4), Ok(vec![5, 6, 7]), Err(8), Err(9)]
                 .into_iter()
                 .fuse(),
-            current: None
+            current: None,
         };
         assert_eq!(
             iter.collect::<Vec<_>>(),
