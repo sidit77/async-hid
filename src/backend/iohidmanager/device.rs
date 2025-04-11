@@ -231,7 +231,7 @@ impl AsyncReportReaderInner {
         report_length: CFIndex
     ) {
         let this: &Self = &*(context as *mut Self);
-        let mut buffer = this.empty_buffers.pop().unwrap_or(Vec::new());
+        let mut buffer = this.empty_buffers.pop().unwrap_or_default();
         buffer.resize(report_length as usize, 0);
         buffer.copy_from_slice(from_raw_parts(report, report_length as usize));
         if let Some(old) = this.full_buffers.force_push(buffer) {
