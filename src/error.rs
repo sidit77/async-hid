@@ -7,9 +7,16 @@ pub type HidResult<T> = Result<T, HidError>;
 
 /// The main error type of this library
 /// Currently mostly a wrapper around a platform specific error
+/// 
+/// **Warning**
+/// All mappings from platform specific errors to platform independent error 
+/// such as `Disconnected` or `NotConnected` are performed on a best effort basis,
+/// as it is generally poorly documented by platform apis which operations can throw which errors and in what circumstances
 #[derive(Debug)]
 pub enum HidError {
+    /// This error occurs when trying to perform an action on a device which was diconnected after being opened
     Disconnected,
+    /// This error occurs when trying to open a device which is no longer connected
     NotConnected,
     Message(Cow<'static, str>),
     Other(Box<dyn std::error::Error + Send + Sync>),
