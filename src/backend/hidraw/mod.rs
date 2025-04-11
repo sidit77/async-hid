@@ -2,25 +2,26 @@ mod descriptor;
 mod ioctl;
 mod uevent;
 
+use futures_lite::stream::{iter, unfold, Boxed};
+use futures_lite::StreamExt;
+use nix::fcntl::OFlag;
+use nix::libc::EIO;
+use nix::unistd::{read, write};
 use std::fs::{read_dir, read_to_string, OpenOptions};
+use std::io::ErrorKind;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
-use futures_lite::stream::{iter, unfold, Boxed};
-use futures_lite::{StreamExt};
 use log::{debug, trace, warn};
-use nix::fcntl::OFlag;
 use nix::sys::socket::{bind, recvfrom, socket, AddressFamily, NetlinkAddr, SockFlag, SockProtocol, SockType};
-use nix::unistd::{read, write};
-
+use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
+use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
+use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
 use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
-use crate::backend::{Backend, DeviceInfoStream};
-use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
-use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
 use crate::backend::hidraw::uevent::{Action, UEvent};
 
 #[derive(Default)]
@@ -46,7 +47,7 @@ impl Backend for HidRawBackend {
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
         let socket = socket(AddressFamily::Netlink, SockType::Datagram, SockFlag::SOCK_CLOEXEC, SockProtocol::NetlinkKObjectUEvent)?;
         bind(socket.as_raw_fd(), &NetlinkAddr::new(process::id(), 1))?;
-        
+
         Ok(unfold((AsyncFd::new(socket)?, vec![0u8; 4096]), |(socket, mut buf)| async move {
             loop {
                 let size = match read_with(&socket, |fd| recvfrom::<NetlinkAddr>(fd.as_raw_fd(), &mut buf).map_err(std::io::Error::from)).await {
@@ -57,18 +58,18 @@ impl Backend for HidRawBackend {
                     }
                 };
 
-                let event = match UEvent::parse(&buf[0..size]) { 
+                let event = match UEvent::parse(&buf[0..size]) {
                     Ok(event) => event,
                     Err(reason) => {
                         debug!("Failed to parse uevent: {}", reason);
                         continue;
                     }
                 };
-                
+
                 if event.subsystem != "hidraw" {
                     continue;
                 }
-                
+
                 let id = DeviceId::DevPath(event.dev_path.to_path_buf());
                 let event = match event.action {
                     Action::Add => DeviceEvent::Connected(id),
@@ -78,7 +79,7 @@ impl Backend for HidRawBackend {
                         continue;
                     }
                 };
-                
+
                 return Some((event, (socket, buf)));
             }
         }).boxed())
@@ -87,16 +88,24 @@ impl Backend for HidRawBackend {
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let DeviceId::DevPath(id) = id;
 
-        let properties = read_to_string(id.join("uevent"))?;
+        let properties = read_to_string(id.join("uevent"))
+            .map_err(|err| match err {
+                err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
+                err => err.into(),
+            })?;
         let id = read_property(&properties, "DEVNAME")
             .ok_or(HidError::message("Can't find dev name"))
             .and_then(mange_dev_name)?;
-        
+
         let fd: OwnedFd = OpenOptions::new()
             .read(read)
             .write(write)
             .custom_flags((OFlag::O_CLOEXEC | OFlag::O_NONBLOCK).bits())
-            .open(&id)?
+            .open(&id)
+            .map_err(|err| match err {
+                err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
+                err => err.into(),
+            })?
             .into();
 
         let mut size = 0i32;
@@ -107,8 +116,8 @@ impl Backend for HidRawBackend {
         
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
-    
-    
+
+
 }
 
 fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
@@ -190,7 +199,10 @@ impl AsyncHidRead for HidDevice {
     async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
         read_with(&self.0, |fd| read(fd.as_raw_fd(), buf).map_err(std::io::Error::from))
             .await
-            .map_err(HidError::from)
+            .map_err(|err| match err {
+                err if err.raw_os_error() == Some(EIO) => HidError::Disconnected,
+                err => err.into(),
+            })
     }
 }
 
@@ -198,7 +210,10 @@ impl AsyncHidWrite for HidDevice {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
         write_with(&self.0, |fd| write(fd, buf).map_err(std::io::Error::from))
             .await
-            .map_err(HidError::from)
+            .map_err(|err| match err {
+                err if err.raw_os_error() == Some(EIO) => HidError::Disconnected,
+                err => err.into(),
+            })
             .map(|i| debug_assert_eq!(i, buf.len()))
     }
 }
@@ -208,8 +223,8 @@ compile_error!("Only tokio or async-io can be active at the same time");
 
 #[cfg(feature = "async-io")]
 mod async_api {
-    use std::os::fd::OwnedFd;
     use async_io::Async;
+    use std::os::fd::OwnedFd;
 
     pub type AsyncFd = Async<OwnedFd>;
 

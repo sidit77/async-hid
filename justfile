@@ -26,13 +26,14 @@ check-macos:
 
 check: check-windows check-linux check-macos
 
-# lint-windows:
-#     cargo clippy --all-features --target x86_64-pc-windows-msvc
-#
-# lint-linux:
-#     cargo clippy --all-features --target x86_64-unknown-linux-gnu
-#
-# lint-macos:
-#     cargo clippy --all-features --target x86_64-apple-darwin
-#
-# lint: lint-windows lint-linux lint-macos
+lint-windows:
+    cargo clippy --all-features --target x86_64-pc-windows-msvc
+
+lint-linux:
+    cargo clippy --no-default-features --features tokio --target x86_64-unknown-linux-gnu
+    cargo clippy --no-default-features --features async-io --target x86_64-unknown-linux-gnu
+
+lint-macos:
+    cargo clippy --all-features --target x86_64-apple-darwin
+
+lint: lint-windows lint-linux lint-macos

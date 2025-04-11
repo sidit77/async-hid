@@ -7,10 +7,19 @@ pub type HidResult<T> = Result<T, HidError>;
 
 /// The main error type of this library
 /// Currently mostly a wrapper around a platform specific error
+/// 
+/// **Warning**
+/// All mappings from platform specific errors to platform independent error 
+/// such as `Disconnected` or `NotConnected` are performed on a best effort basis,
+/// as it is generally poorly documented by platform apis which operations can throw which errors and in what circumstances
 #[derive(Debug)]
 pub enum HidError {
+    /// This error occurs when trying to perform an action on a device which was diconnected after being opened
+    Disconnected,
+    /// This error occurs when trying to open a device which is no longer connected
+    NotConnected,
     Message(Cow<'static, str>),
-    Other(Box<dyn std::error::Error + Send + Sync>)
+    Other(Box<dyn std::error::Error + Send + Sync>),
 }
 
 impl HidError {
@@ -30,7 +39,9 @@ impl Display for HidError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             HidError::Message(msg) => f.write_str(msg),
-            HidError::Other(err) => Display::fmt(err, f)
+            HidError::Other(err) => Display::fmt(err, f),
+            HidError::Disconnected => f.write_str("The device was disconnected"),
+            HidError::NotConnected => f.write_str("The device is not connected"),
         }
     }
 }
@@ -39,7 +50,7 @@ impl std::error::Error for HidError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             HidError::Other(err) => Some(err.as_ref()),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -55,7 +66,11 @@ impl From<std::io::Error> for HidError {
 impl From<windows::core::Error> for HidError {
     #[track_caller]
     fn from(error: windows::core::Error) -> Self {
-        HidError::from_backend(error)
+        const DISCONNECTED: windows::core::HRESULT = windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED.0);
+        match error.code() {
+            DISCONNECTED => HidError::Disconnected,
+            _ => HidError::from_backend(error),
+        }
     }
 }
 

@@ -1,4 +1,7 @@
+use std::time::Duration;
+
 use async_hid::{AsyncHidRead, HidBackend, HidResult};
+use async_io::Timer;
 use futures_lite::stream::StreamExt;
 use simple_logger::SimpleLogger;
 
@@ -15,7 +18,9 @@ async fn main() -> HidResult<()> {
         .expect("Could not find device")
         .open_readable()
         .await?;
-
+    println!("Waiting");
+    Timer::after(Duration::from_millis(3000)).await;
+    println!("Reading");
     let mut buffer = [0u8; 8];
     loop {
         let size = device.read_input_report(&mut buffer).await?;
