@@ -5,8 +5,8 @@ use crate::backend::{Backend, DeviceInfoStream};
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 use crate::utils::TryIterExt;
 use crate::{DeviceEvent, DeviceId, HidResult};
-use futures_lite::stream::{iter, Boxed};
-use futures_lite::StreamExt;
+use futures_lite::stream::{iter, pending, Boxed};
+use futures_lite::{FutureExt, StreamExt};
 use objc2_io_kit::{IOHIDDevice, IOHIDManager, IOHIDManagerOptions};
 use std::ptr::NonNull;
 
@@ -36,7 +36,16 @@ impl Backend for IoHidManagerBackend2 {
     }
 
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
-        todo!()
+        unsafe {
+            let manager = IOHIDManager::new(None, IOHIDManagerOptions::None.bits());
+            manager.set_device_matching(None);
+            
+            manager.register_device_matching_callback()
+        }
+        
+        
+        
+        Ok(pending().boxed())
     }
 
     async fn open(&self, _id: &DeviceId, _read: bool, _write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
