@@ -157,11 +157,6 @@ dyn_backend_impl! {
     mod iohidmanager2 {
         IoHidManager(iohidmanager2::IoHidManagerBackend2)
     }
-    
-    #[cfg(target_os = "macos")]
-    mod iohidmanager {
-        IoHidManagerLegacy(iohidmanager::IoHidManagerBackend)
-    }
 }
 
 impl Default for DynBackend {
