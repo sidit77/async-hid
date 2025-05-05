@@ -106,6 +106,6 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
     Ok(result)
 }
 
-fn property_key(key: &'static CStr) -> CFRetained<CFString> {
+pub fn property_key(key: &'static CStr) -> CFRetained<CFString> {
     unsafe { CFString::with_c_string_no_copy(None, key.as_ptr(), CFStringBuiltInEncodings::EncodingUTF8.0, kCFAllocatorNull).unwrap() }
 }
