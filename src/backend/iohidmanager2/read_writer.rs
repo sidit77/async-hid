@@ -3,7 +3,7 @@ use crate::{AsyncHidRead, AsyncHidWrite, HidError, HidResult};
 use atomic_waker::AtomicWaker;
 use crossbeam_queue::ArrayQueue;
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
-use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
+use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
 use std::ffi::c_void;
 use std::future::{poll_fn, Future};
 use std::mem::ManuallyDrop;
@@ -18,15 +18,18 @@ use log::trace;
 pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
     read_state: Option<ReaderState>,
+    write_state: Option<WriterState>
 }
 
 unsafe impl Send for DeviceReadWriter {}
 unsafe impl Sync for DeviceReadWriter {}
 
-pub struct ReaderState {
+struct ReaderState {
     inner: *const AsyncReportReaderInner,
     report_buffer: ManuallyDrop<Vec<u8>>,
 }
+
+struct WriterState;
 
 unsafe impl Send for ReaderState {}
 unsafe impl Sync for ReaderState {}
@@ -35,7 +38,7 @@ impl DeviceReadWriter {
 
     pub const DEVICE_OPTIONS: IOOptionBits = 0;
 
-    pub fn new(device: CFRetained<IOHIDDevice>, read: bool) -> HidResult<Self> {
+    pub fn new(device: CFRetained<IOHIDDevice>, read: bool, write: bool) -> HidResult<Self> {
 
         let read_state = match read {
             false => None,
@@ -69,13 +72,12 @@ impl DeviceReadWriter {
             })
         };
 
+        let write_state = write.then_some(WriterState);
+        
         unsafe { device.activate(); }
-        Ok(Self { device, read_state })
+        Ok(Self { device, read_state, write_state })
     }
-
-    pub fn reader(&self) -> &ReaderState {
-        self.read_state.as_ref().expect("Device is not readable")
-    }
+    
 
 }
 
@@ -84,14 +86,29 @@ impl AsyncHidRead for Arc<DeviceReadWriter> {
         self
             .read_state
             .as_ref()
-            .expect("Device was not initialized for read operations")
+            .expect("Device is not readable")
             .read(buf)
     }
 }
 
 impl AsyncHidWrite for Arc<DeviceReadWriter> {
-    async fn write_output_report<'a>(&'a mut self, _buf: &'a [u8]) -> HidResult<()> {
-        todo!()
+    async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
+        #[allow(non_upper_case_globals)]
+        const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
+        
+        let _ = self
+            .write_state
+            .as_ref()
+            .expect("Device is not writable");
+        let report_id = buf[0];
+        let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
+        
+        
+        match unsafe { self.device.set_report(IOHIDReportType::Output, report_id as _, NonNull::new_unchecked(data_to_send.as_ptr() as _), data_to_send.len() as _) } {
+            kIOReturnSuccess => Ok(()),
+            kIOReturnBadArgument => Err(HidError::Disconnected),
+            other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
+        }
     }
 }
 

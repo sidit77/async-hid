@@ -112,7 +112,6 @@ impl Backend for IoHidManagerBackend2 {
         let id = match id {
             DeviceId::RegistryEntryId(id) => *id
         };
-        assert!(read == true && write == false);
         let device = unsafe {
             let service = IOServiceGetMatchingService(kIOMasterPortDefault, IORegistryEntryIDMatching(id).map(|d|d.downcast::<CFDictionary>().unwrap()));
             ensure!(service != 0, HidError::NotConnected);
@@ -121,7 +120,7 @@ impl Backend for IoHidManagerBackend2 {
             ensure!(device.open(DeviceReadWriter::DEVICE_OPTIONS) == kIOReturnSuccess, HidError::message("Failed to open device"));
             device
         };
-        let rw = Arc::new(DeviceReadWriter::new(device, read)?);
+        let rw = Arc::new(DeviceReadWriter::new(device, read, write)?);
         Ok((read.then_some(rw.clone()), write.then_some(rw)))
     }
 
