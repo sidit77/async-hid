@@ -1,20 +1,19 @@
 mod device_info;
+mod read_writer;
 
-use crate::backend::iohidmanager2::device_info::{get_device_info, property_key};
+use crate::backend::iohidmanager2::device_info::get_device_info;
+use crate::backend::iohidmanager2::read_writer::DeviceReadWriter;
 use crate::backend::{Backend, DeviceInfoStream};
-use crate::traits::{AsyncHidRead, AsyncHidWrite};
 use crate::utils::TryIterExt;
 use crate::{ensure, DeviceEvent, DeviceId, HidError, HidResult};
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
 use futures_lite::stream::{iter, pending, Boxed};
-use futures_lite::{StreamExt};
-use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOMasterPortDefault, kIOReturnSuccess, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IOHIDOptionsType, IOHIDReportType, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
+use futures_lite::StreamExt;
+use objc2_core_foundation::{CFDictionary, CFRetained};
+use objc2_io_kit::{kIOMasterPortDefault, kIOReturnSuccess, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
 use std::ffi::c_void;
-use std::mem::ManuallyDrop;
 use std::ptr::{null_mut, NonNull};
-use std::slice::from_raw_parts;
-use std::sync::LazyLock;
-use objc2_core_foundation::{CFDictionary, CFIndex, CFNumber, CFRetained};
+use std::sync::{Arc, LazyLock};
 
 static DISPATCH_QUEUE: LazyLock<DispatchRetained<DispatchQueue>> = LazyLock::new(|| DispatchQueue::new("async-hid", DispatchQueueAttr::SERIAL));
 
@@ -58,8 +57,8 @@ impl IoHidManagerBackend2 {
 }
 
 impl Backend for IoHidManagerBackend2 {
-    type Reader = IoDeviceReader;
-    type Writer = DummyRW;
+    type Reader = Arc<DeviceReadWriter>;
+    type Writer = Arc<DeviceReadWriter>;
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let device_infos = unsafe {
@@ -102,44 +101,19 @@ impl Backend for IoHidManagerBackend2 {
             DeviceId::RegistryEntryId(id) => *id
         };
         assert!(read == true && write == false);
-        unsafe {
+        let device = unsafe {
             let service = IOServiceGetMatchingService(kIOMasterPortDefault, IORegistryEntryIDMatching(id).map(|d|d.downcast::<CFDictionary>().unwrap()));
             ensure!(service != 0, HidError::NotConnected);
             let device = IOHIDDevice::new(None, service).ok_or(HidError::message("Failed to create device"))?;
             device.set_dispatch_queue(&*DISPATCH_QUEUE);
-            ensure!(device.open(0) == kIOReturnSuccess, HidError::message("Failed to open device"));
-
-            let max_input_report_len = device
-                .property(&property_key(kIOHIDMaxInputReportSizeKey))
-                .ok_or(HidError::message("Failed to read input report size"))?
-                .downcast_ref::<CFNumber>()
-                .and_then(|n| n.as_i32())
-                .unwrap() as usize;
-
-            let mut report_buffer = ManuallyDrop::new(vec![0u8; max_input_report_len]);
-            
-            device.register_input_report_callback(
-                NonNull::new_unchecked(report_buffer.as_mut_ptr()), 
-                report_buffer.len() as CFIndex, 
-                Some(hid_report_callback), 
-                null_mut()
-            );
-            device.activate();
-            
-            Ok((Some(IoDeviceReader {
-                device,
-            }), None))
-        }
-        
+            ensure!(device.open(DeviceReadWriter::DEVICE_OPTIONS) == kIOReturnSuccess, HidError::message("Failed to open device"));
+            device
+        };
+        let rw = Arc::new(DeviceReadWriter::new(device, read)?);
+        Ok((read.then_some(rw.clone()), write.then_some(rw)))
     }
 
 
-}
-
-unsafe extern "C-unwind" fn hid_report_callback(
-    _context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: NonNull<u8>, report_length: CFIndex
-) {
-    println!("REPORT: {:?}", from_raw_parts(report.as_ptr(), report_length as usize));
 }
 
 unsafe extern "C-unwind" fn added_callback(_context: *mut c_void, _result: IOReturn, _sender: *mut c_void, device: NonNull<IOHIDDevice>) {
@@ -150,34 +124,3 @@ unsafe extern "C-unwind" fn removed_callback(_context: *mut c_void, _result: IOR
     println!("DEVICE REMOVED: {:?}", get_device_info(device.as_ref()));
 }
 
-pub struct IoDeviceReader {
-    device: CFRetained<IOHIDDevice>
-}
-
-impl Drop for IoDeviceReader {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.cancel();
-            self.device.close(0);
-        }
-    }
-}
-
-unsafe impl Send for IoDeviceReader {}
-unsafe impl Sync for IoDeviceReader {}
-
-#[derive(Debug)]
-pub struct DummyRW;
-
-impl AsyncHidRead for IoDeviceReader {
-    async fn read_input_report<'a>(&'a mut self, _buf: &'a mut [u8]) -> HidResult<usize> {
-        futures_lite::future::pending::<()>().await;
-        Ok(0)
-    }
-}
-
-impl AsyncHidWrite for DummyRW {
-    async fn write_output_report<'a>(&'a mut self, _buf: &'a [u8]) -> HidResult<()> {
-        todo!()
-    }
-}
