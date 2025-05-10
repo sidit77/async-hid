@@ -58,14 +58,10 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
                 .map(|p| p.to_string()))
     };
 
-    let mut id = 0;
-    let port = unsafe { device.service() };
-    ensure!(port != 0, HidError::message("Failed to get mach port"));
-    ensure!(unsafe { IORegistryEntryGetRegistryEntryID(port, &mut id) } == kIOReturnSuccess, 
-        HidError::message("Failed to retrieve entry id"));
+    
 
     let primary_info = DeviceInfo {
-        id: DeviceId::RegistryEntryId(id),
+        id: get_device_id(device)?,
         name,
         product_id,
         vendor_id,
@@ -108,4 +104,13 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
 
 pub fn property_key(key: &'static CStr) -> CFRetained<CFString> {
     unsafe { CFString::with_c_string_no_copy(None, key.as_ptr(), CFStringBuiltInEncodings::EncodingUTF8.0, kCFAllocatorNull).unwrap() }
+}
+
+pub fn get_device_id(device: &IOHIDDevice) -> HidResult<DeviceId> {
+    let mut id = 0;
+    let port = unsafe { device.service() };
+    ensure!(port != 0, HidError::message("Failed to get mach port"));
+    ensure!(unsafe { IORegistryEntryGetRegistryEntryID(port, &mut id) } == kIOReturnSuccess, 
+        HidError::message("Failed to retrieve entry id"));
+    Ok(DeviceId::RegistryEntryId(id))
 }

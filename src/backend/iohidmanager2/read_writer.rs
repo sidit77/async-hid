@@ -102,8 +102,8 @@ impl AsyncHidWrite for Arc<DeviceReadWriter> {
             .expect("Device is not writable");
         let report_id = buf[0];
         let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
-        
-        
+
+        #[allow(non_upper_case_globals)]
         match unsafe { self.device.set_report(IOHIDReportType::Output, report_id as _, NonNull::new_unchecked(data_to_send.as_ptr() as _), data_to_send.len() as _) } {
             kIOReturnSuccess => Ok(()),
             kIOReturnBadArgument => Err(HidError::Disconnected),
