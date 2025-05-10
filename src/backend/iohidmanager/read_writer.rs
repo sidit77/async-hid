@@ -1,4 +1,4 @@
-use crate::backend::iohidmanager2::device_info::property_key;
+use crate::backend::iohidmanager::device_info::property_key;
 use crate::{AsyncHidRead, AsyncHidWrite, HidError, HidResult};
 use atomic_waker::AtomicWaker;
 use crossbeam_queue::ArrayQueue;

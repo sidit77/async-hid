@@ -52,14 +52,6 @@ async-io = { version = "2", optional = true }
 nix = { version = "0.29.0", features = ["fs", "ioctl", "socket"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
-#async-lock = "3.4.0"
-#async-channel = "2.3.1"
-#core-foundation = "0.10.0"
-#io-kit-sys = "0.4"
-#mach2 = "0.4"
-#atomic-waker = "1.1.2"
-#crossbeam-queue = "0.3.12"
-
 objc2-io-kit = "0.3.1"
 objc2-core-foundation = "0.3.1"
 dispatch2 = "0.3.0"

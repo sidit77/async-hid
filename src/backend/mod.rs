@@ -136,7 +136,6 @@ macro_rules! dyn_backend_impl {
 #[cfg(rustfmt)] mod winrt;
 #[cfg(rustfmt)] mod hidraw;
 #[cfg(rustfmt)] mod iohidmanager;
-#[cfg(rustfmt)] mod iohidmanager2;
 
 // Dynamic dispatch doesn't play well with async traits so we just generate a big enum
 // that forwards function calls the correct implementations
@@ -154,8 +153,8 @@ dyn_backend_impl! {
         HidRaw(hidraw::HidRawBackend)
     }
     #[cfg(target_os = "macos")]
-    mod iohidmanager2 {
-        IoHidManager(iohidmanager2::IoHidManagerBackend2)
+    mod iohidmanager {
+        IoHidManager(iohidmanager::IoHidManagerBackend)
     }
 }
 
