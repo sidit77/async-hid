@@ -13,7 +13,9 @@ use objc2_core_foundation::{CFDictionary, CFRetained};
 use objc2_io_kit::{kIOMasterPortDefault, kIOReturnSuccess, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
 use std::ffi::c_void;
 use std::ptr::{null_mut, NonNull};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Once};
+use block2::RcBlock;
+use log::trace;
 
 static DISPATCH_QUEUE: LazyLock<DispatchRetained<DispatchQueue>> = LazyLock::new(|| DispatchQueue::new("async-hid", DispatchQueueAttr::SERIAL));
 
@@ -47,7 +49,17 @@ impl Default for IoHidManagerBackend2 {
 impl Drop for IoHidManagerBackend2 {
     fn drop(&mut self) {
         unsafe {
+            let once = Arc::new(Once::new());
+            let block = RcBlock::new({
+                let once = once.clone();
+                move || once.call_once(|| trace!("Finished canceling manager"))
+            });
+
+            self.manager.set_cancel_handler(RcBlock::as_ptr(&block));
             self.manager.cancel();
+            trace!("Waiting for manager cancel to finish");
+            once.wait();
+            trace!("Resuming destructor of manager");
         }
     }
 }

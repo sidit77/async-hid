@@ -7,11 +7,13 @@ use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, IOHIDDevice, IOHIDReportType, IO
 use std::ffi::c_void;
 use std::future::{poll_fn, Future};
 use std::mem::ManuallyDrop;
-use std::ptr::{null_mut, NonNull};
+use std::ptr::{NonNull};
 use std::slice::from_raw_parts;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
+use block2::{RcBlock};
+use log::trace;
 
 pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
@@ -30,11 +32,11 @@ unsafe impl Send for ReaderState {}
 unsafe impl Sync for ReaderState {}
 
 impl DeviceReadWriter {
-    
+
     pub const DEVICE_OPTIONS: IOOptionBits = 0;
-    
+
     pub fn new(device: CFRetained<IOHIDDevice>, read: bool) -> HidResult<Self> {
-        
+
         let read_state = match read {
             false => None,
             true => Some(unsafe {
@@ -44,7 +46,7 @@ impl DeviceReadWriter {
                     .downcast_ref::<CFNumber>()
                     .and_then(|n| n.as_i32())
                     .unwrap() as usize;
-                
+
                 let mut report_buffer = ManuallyDrop::new(vec![0u8; max_input_report_len]);
 
                 let inner = Box::into_raw(Box::new(AsyncReportReaderInner::default()));
@@ -56,25 +58,25 @@ impl DeviceReadWriter {
                     inner.cast()
                 );
                 device.register_removal_callback(
-                    Some(AsyncReportReaderInner::hid_removal_callback), 
+                    Some(AsyncReportReaderInner::hid_removal_callback),
                     inner.cast()
                 );
-                
+
                 ReaderState {
                     inner: inner.cast(),
                     report_buffer,
                 }
             })
         };
-        
+
         unsafe { device.activate(); }
         Ok(Self { device, read_state })
     }
-    
+
     pub fn reader(&self) -> &ReaderState {
         self.read_state.as_ref().expect("Device is not readable")
     }
-    
+
 }
 
 impl AsyncHidRead for Arc<DeviceReadWriter> {
@@ -105,7 +107,7 @@ impl ReaderState {
                     inner.recycle_buffer(report);
                     Poll::Ready(Ok(length))
                 }
-                None => match inner.removed.load(Ordering::SeqCst) {
+                None => match inner.removed.load(Ordering::Relaxed) {
                     true => Poll::Ready(Err(HidError::Disconnected)),
                     false => Poll::Pending,
                 }
@@ -117,12 +119,23 @@ impl ReaderState {
 impl Drop for DeviceReadWriter {
     fn drop(&mut self) {
         unsafe {
-            self.device.cancel();
+            {
+                let once = Arc::new(Once::new());
+                let block = RcBlock::new({
+                    let once = once.clone();
+                    move || once.call_once(|| trace!("Finished canceling device"))
+                });
+                
+                self.device.set_cancel_handler(RcBlock::as_ptr(&block));
+                self.device.cancel();
+                trace!("Waiting for device cancel to finish");
+                once.wait();
+                trace!("Resuming destructor of device");
+            }
             
             if let Some(mut state) = self.read_state.take() {
-                self.device.register_removal_callback(None, null_mut());
-                self.device.register_input_report_callback(NonNull::dangling(), 0, None, null_mut());
-
+                //SAFETY The device was canceled in the previous step, 
+                // and therefore the callbacks that reference these buffers can no longer be called
                 ManuallyDrop::drop(&mut state.report_buffer);
                 drop(Box::<AsyncReportReaderInner>::from_raw(state.inner as *mut _));
             }
@@ -169,10 +182,10 @@ impl AsyncReportReaderInner {
         }
         this.waker.wake();
     }
-    
+
     unsafe extern "C-unwind" fn hid_removal_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void) {
         let this: &Self = &*(context as *mut Self);
-        this.removed.store(true, Ordering::SeqCst);
+        this.removed.store(true, Ordering::Relaxed);
         this.waker.wake();
     }
 
