@@ -87,7 +87,7 @@ impl HidBackend {
 
     /// Enumerates all **accessible** HID devices
     ///
-    /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
+    /// If this library fails to retrieve the [DeviceInfo] of a device, it will be automatically excluded.
     pub async fn enumerate(&self) -> HidResult<impl Stream<Item = Device> + Send + Unpin + use<'_>> {
         let steam = self.0.enumerate().await?.filter_map(|result| match result {
             Ok(info) => Some(Device {
@@ -98,8 +98,9 @@ impl HidBackend {
         });
         Ok(steam)
     }
-    
-    pub async fn query_device(&self, id: &DeviceId) -> HidResult<impl Iterator<Item = Device> + use<'_>> {
+
+    /// Retrieve all device instances connected to a given id.
+    pub async fn query_devices(&self, id: &DeviceId) -> HidResult<impl Iterator<Item = Device> + use<'_>> {
         Ok(self.0
             .query_info(id)
             .await?
@@ -109,7 +110,10 @@ impl HidBackend {
                 device_info: info,
             }))
     }
-    
+
+    /// Listen for device connect/disconnect events
+    ///
+    /// For "connect" events the returned id can be turned into a list of new devices using [self.query_devices]
     pub fn watch(&self) -> HidResult<impl Stream<Item = DeviceEvent> + Send + Unpin> {
         self.0.watch()
     }
@@ -152,8 +156,8 @@ impl Deref for Device {
 }
 
 impl Device {
-    
-    
+
+
     /// Open the device in read-only mode
     pub async fn open_readable(&self) -> HidResult<DeviceReader> {
         let (r, _) = self.backend.open(&self.id, true, false).await?;

@@ -21,7 +21,7 @@ async fn main() -> HidResult<()> {
         println!("Number of connected devices: {}", device_set.len());
         if let Some(event) = watcher.next().await {
             match event {
-                DeviceEvent::Connected(id) => device_set.extend(backend.query_device(&id).await?),
+                DeviceEvent::Connected(id) => device_set.extend(backend.query_devices(&id).await?),
                 DeviceEvent::Disconnected(id) => device_set.retain(|device| device.id != id)
             }
         }
