@@ -79,6 +79,15 @@ impl Backend for WinRtBackend {
         Ok(receiver.chain(WatchHelper(self.clone())).boxed())
     }
 
+    async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
+        let DeviceId::UncPath(id) = id;
+        let info = DeviceInformation::CreateFromIdAsync(id)?.await?;
+        Ok(get_device_information(info)
+            .await?
+            .into_iter()
+            .collect())
+    }
+
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let mode = match (read, write) {
             (true, false) => FileAccessMode::Read,
@@ -200,7 +209,7 @@ impl WinRtBackend {
                 move |_, info: Ref<DeviceInformationUpdate>| {
                     let info = info.ok()?;
                     let id = info.Id()?;
-                    trace!("device removed: {:?}", id);
+                    //trace!("device removed: {:?}", id);
                     ctx
                         .active_readers
                         .lock()
