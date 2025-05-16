@@ -24,6 +24,9 @@ use log::{debug, trace};
 
 static DISPATCH_QUEUE: LazyLock<DispatchRetained<DispatchQueue>> = LazyLock::new(|| DispatchQueue::new("async-hid", DispatchQueueAttr::SERIAL));
 
+// TODO:
+// - Async Read implementation
+
 pub type IoHidManagerBackend = Arc<IoHidManagerBackendInner>;
 
 pub struct IoHidManagerBackendInner{
