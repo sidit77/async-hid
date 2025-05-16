@@ -47,6 +47,11 @@ impl Backend for Win32Backend {
         Ok(DeviceNotificationStream::new()?.boxed())
     }
 
+    async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
+        let DeviceId::UncPath(id) = id;
+        Ok(vec![get_device_information(id.clone())?])
+    }
+
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let id = match id {
