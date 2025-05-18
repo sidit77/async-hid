@@ -1,4 +1,5 @@
-use std::hash::Hash;
+use std::fmt::Debug;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -66,6 +67,13 @@ impl DeviceInfo {
     }
 }
 
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub enum DeviceEvent {
+    Connected(DeviceId),
+    Disconnected(DeviceId),
+}
+
+
 /// The main entry point of this library
 #[derive(Default, Clone)]
 pub struct HidBackend(Arc<DynBackend>);
@@ -79,8 +87,8 @@ impl HidBackend {
 
     /// Enumerates all **accessible** HID devices
     ///
-    /// If this library fails to retrieve the [DeviceInfo] of a device it will be automatically excluded.
-    pub async fn enumerate(&self) -> HidResult<impl Stream<Item = Device> + Send + Unpin + '_> {
+    /// If this library fails to retrieve the [DeviceInfo] of a device, it will be automatically excluded.
+    pub async fn enumerate(&self) -> HidResult<impl Stream<Item = Device> + Send + Unpin + use<'_>> {
         let steam = self.0.enumerate().await?.filter_map(|result| match result {
             Ok(info) => Some(Device {
                 backend: self.0.clone(),
@@ -90,12 +98,53 @@ impl HidBackend {
         });
         Ok(steam)
     }
+
+    /// Retrieve all device instances connected to a given id.
+    pub async fn query_devices(&self, id: &DeviceId) -> HidResult<impl Iterator<Item = Device> + use<'_>> {
+        Ok(self.0
+            .query_info(id)
+            .await?
+            .into_iter()
+            .map(|info| Device {
+                backend: self.0.clone(),
+                device_info: info,
+            }))
+    }
+
+    /// Listen for device connect/disconnect events
+    ///
+    /// For "connect" events the returned id can be turned into a list of new devices using [self.query_devices]
+    pub fn watch(&self) -> HidResult<impl Stream<Item = DeviceEvent> + Send + Unpin> {
+        self.0.watch()
+    }
+    
 }
 
 /// A HID device that was detected by calling [HidBackend::enumerate]
 pub struct Device {
     backend: Arc<DynBackend>,
     device_info: DeviceInfo,
+}
+
+impl Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Device")
+            .field("device_info", &self.device_info)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for Device {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.backend, &other.backend) && DeviceInfo::eq(&self.device_info, &other.device_info)
+    }
+}
+impl Eq for Device { }
+
+impl Hash for Device {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        DeviceInfo::hash(&self.device_info, state)
+    }
 }
 
 impl Deref for Device {
@@ -107,6 +156,11 @@ impl Deref for Device {
 }
 
 impl Device {
+
+    pub fn to_device_info(self) -> DeviceInfo {
+        self.device_info
+    }
+    
     /// Open the device in read-only mode
     pub async fn open_readable(&self) -> HidResult<DeviceReader> {
         let (r, _) = self.backend.open(&self.id, true, false).await?;

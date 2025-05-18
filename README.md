@@ -1,7 +1,7 @@
 # async-hid
 A Rust library for asynchronously interacting with HID devices. 
 
-This crate aims the be a replacement for [hidapi-rs](https://github.com/ruabmbua/hidapi-rs) without the baggage that comes from being a wrapper around a C library.
+This crate aims to be a replacement for [hidapi-rs](https://github.com/ruabmbua/hidapi-rs) without the baggage that comes from being a wrapper around a C library.
 
 This crate generally offers a simpler and more streamlined api while also supporting async as best as possible. 
 
@@ -47,7 +47,7 @@ Under Windows this crate uses either `win32` (default) or `winrt` feature for ba
 
 
 ## Async
-The amount of asynchronicity that each OS provides varies. The following tables gives a rough overview which calls utilize async under the hood.
+The amount of asynchronicity that each OS provides varies. The following table gives a rough overview which calls utilize async under the hood.
 
 |                 | `enumerate`  | `open` | `read_input_report` | `write_output_report` |
 |-----------------|--------------|--------|---------------------|-----------------------|
@@ -56,12 +56,11 @@ The amount of asynchronicity that each OS provides varies. The following tables 
 | Linux           | ❌            | ❌      | ✔️                  | ✔️                    |
 | MacOS           | ❌            | ✔️     | ✔️                  | ❌                     |
 
-Under Linux this crate uses either `async-io` (default) or `tokio` feature for the async functionality.
+Under Linux this crate uses either `async-io` (default) or `tokio` feature for the async functionality. 
 
 ## Planned Features
-- [ ] Reading / Writing feature reports
-- [ ] Listening for changes to the device list
-- [ ] More unified error handling
+- Reading / Writing feature reports
+
 
 ## License
 MIT License

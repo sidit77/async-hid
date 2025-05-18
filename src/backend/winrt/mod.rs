@@ -1,9 +1,12 @@
 mod utils;
 
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::task::{Context, Poll};
 use async_channel::{Receiver, Sender, WeakSender};
-use futures_lite::{StreamExt};
+use futures_lite::{Stream, StreamExt};
+use futures_lite::stream::{Boxed};
 use log::{debug, trace};
 use once_cell::sync::OnceCell;
 use windows::core::{h, Ref, HRESULT, HSTRING};
@@ -14,7 +17,7 @@ use windows::Storage::FileAccessMode;
 use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResultExt};
 use crate::error::{HidResult};
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceInfo, HidError};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceInfo, HidError};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 
@@ -25,7 +28,8 @@ const DEVICE_SELECTOR: &HSTRING = h!(
 #[derive(Default)]
 struct DeviceWatcherContext {
     next_id: AtomicU64,
-    active_readers: Mutex<Vec<(u64, HSTRING, WeakSender<HidInputReport>)>>
+    active_readers: Mutex<Vec<(u64, HSTRING, WeakSender<HidInputReport>)>>,
+    watchers: Mutex<Vec<Sender<DeviceEvent>>>
 }
 
 #[derive(Default, Clone)]
@@ -33,6 +37,7 @@ pub struct WinRtBackend {
     context: Arc<DeviceWatcherContext>,
     watcher: Arc<OnceCell<DeviceWatcher>>
 }
+
 
 impl Backend for WinRtBackend {
     // type DeviceId = HSTRING;
@@ -47,6 +52,40 @@ impl Backend for WinRtBackend {
             .filter_map(|r| r.transpose());
 
         Ok(devices.boxed())
+    }
+
+    fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
+        
+        // This type has 3 purposes:
+        // - Keeping the backend alive as long as the returned stream exists
+        // - Making sure that the returned stream never ends to match other platforms
+        // - clearing the closed channel from the watcher on drop
+        struct WatchHelper(WinRtBackend);
+        impl Drop for WatchHelper {
+            fn drop(&mut self) {
+                self.0.clear_closed_event_watchers()
+            }
+        }
+        impl Stream for WatchHelper {
+            type Item = DeviceEvent;
+
+            fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+                Poll::Pending
+            }
+        }
+        
+        let (sender, receiver) = async_channel::bounded(64);
+        self.register_event_watcher(sender)?;
+        Ok(receiver.chain(WatchHelper(self.clone())).boxed())
+    }
+
+    async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
+        let DeviceId::UncPath(id) = id;
+        let info = DeviceInformation::CreateFromIdAsync(id)?.await?;
+        Ok(get_device_information(info)
+            .await?
+            .into_iter()
+            .collect())
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
@@ -68,6 +107,8 @@ impl Backend for WinRtBackend {
         };
         Ok((input, read.then_some(device)))
     }
+
+
 }
 
 async fn get_device_information(device: DeviceInformation) -> HidResult<Option<DeviceInfo>> {
@@ -102,7 +143,6 @@ impl InputReceiver {
         let (sender, receiver) = async_channel::bounded(64);
         let watcher_registration = backend.register_active_reader(id.clone(), &sender)?;
         let token = device.InputReportReceived(&TypedEventHandler::new(move |_, args: Ref<HidInputReportReceivedEventArgs>| {
-            debug!("{:?}", args.as_ref());
             if let Some(args) = args.as_ref() {
                 let msg = args.Report()?;
                 let _ = sender.force_send(msg);
@@ -169,7 +209,7 @@ impl WinRtBackend {
                 move |_, info: Ref<DeviceInformationUpdate>| {
                     let info = info.ok()?;
                     let id = info.Id()?;
-                    trace!("device removed: {:?}", id);
+                    //trace!("device removed: {:?}", id);
                     ctx
                         .active_readers
                         .lock()
@@ -184,8 +224,37 @@ impl WinRtBackend {
                             }
                             false => true
                         });
+                    ctx
+                        .watchers
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .retain(|channel| channel.force_send(DeviceEvent::Disconnected(DeviceId::UncPath(id.clone()))).is_ok());
                     Ok(())
                 }
+            }))?;
+
+            let enumeration_complete = Arc::new(AtomicBool::new(false));
+            watcher.Added(&TypedEventHandler::new({
+                let ctx = self.context.clone();
+                let enumeration_complete = enumeration_complete.clone();
+                move |_, info: Ref<DeviceInformation>| {
+                    if !enumeration_complete.load(Ordering::Relaxed) {
+                        return Ok(());
+                    }
+                    let info = info.ok()?;
+                    let id = info.Id()?;
+                    ctx
+                        .watchers
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .retain(|channel| channel.force_send(DeviceEvent::Connected(DeviceId::UncPath(id.clone()))).is_ok());
+                    Ok(())
+                }
+            }))?;
+
+            watcher.EnumerationCompleted(&TypedEventHandler::new(move |_, _| {
+                enumeration_complete.store(true, Ordering::Relaxed);
+                Ok(())
             }))?;
 
             debug!("Starting device watcher");
@@ -224,6 +293,27 @@ impl WinRtBackend {
         } else {
             trace!("Unregistered reader {} from the device watcher", registration);
         }
+    }
+
+    fn register_event_watcher(&self, sender: Sender<DeviceEvent>) -> HidResult<()> {
+        self.initialize_watcher()?;
+        let mut watchers = self.context
+            .watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        watchers.push(sender);
+        trace!("Registered new event watcher (total: {})", watchers.len());
+        Ok(())
+    }
+
+    fn clear_closed_event_watchers(&self) {
+        let mut watchers = self.context
+            .watchers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let count = watchers.len();
+        watchers.retain(|watcher| !watcher.is_closed());
+        trace!("Cleared {} event watchers ({} remaining)", count - watchers.len(), watchers.len());
     }
 
 }
