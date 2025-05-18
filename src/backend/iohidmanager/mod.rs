@@ -5,12 +5,12 @@ use crate::backend::iohidmanager::device_info::{get_device_id, get_device_info};
 use crate::backend::iohidmanager::read_writer::DeviceReadWriter;
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
-use crate::{ensure, DeviceEvent, DeviceId, HidError, HidResult};
+use crate::{ensure, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
 use futures_lite::stream::{iter, Boxed};
 use futures_lite::{Stream, StreamExt};
 use objc2_core_foundation::{CFDictionary, CFRetained};
-use objc2_io_kit::{kIOMasterPortDefault, kIOReturnSuccess, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
+use objc2_io_kit::{kIOMasterPortDefault, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
 use std::ffi::c_void;
 use std::pin::Pin;
 use std::ptr::{null, NonNull};
@@ -112,23 +112,32 @@ impl Backend for IoHidManagerBackend {
         Ok(watcher.boxed())
     }
 
+    async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
+        let device = get_device(id, None)?;
+        let device_info = get_device_info(&device)?;
+        Ok(device_info)
+    }
+
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
-        let id = match id {
-            DeviceId::RegistryEntryId(id) => *id
-        };
-        let device = unsafe {
-            let service = IOServiceGetMatchingService(kIOMasterPortDefault, IORegistryEntryIDMatching(id).map(|d|d.downcast::<CFDictionary>().unwrap()));
-            ensure!(service != 0, HidError::NotConnected);
-            let device = IOHIDDevice::new(None, service).ok_or(HidError::message("Failed to create device"))?;
-            device.set_dispatch_queue(&*DISPATCH_QUEUE);
-            ensure!(device.open(DeviceReadWriter::DEVICE_OPTIONS) == kIOReturnSuccess, HidError::message("Failed to open device"));
-            device
-        };
+        let device = get_device(id, Some(&*DISPATCH_QUEUE))?;
         let rw = Arc::new(DeviceReadWriter::new(device, read, write)?);
         Ok((read.then_some(rw.clone()), write.then_some(rw)))
     }
 
 
+}
+
+fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResult<CFRetained<IOHIDDevice>> {
+    let DeviceId::RegistryEntryId(id) = id;
+    unsafe {
+        let service = IOServiceGetMatchingService(kIOMasterPortDefault, IORegistryEntryIDMatching(*id).map(|d|d.downcast::<CFDictionary>().unwrap()));
+        ensure!(service != 0, HidError::NotConnected);
+        let device = IOHIDDevice::new(None, service).ok_or(HidError::message("Failed to create device"))?;
+        if let Some(queue) = dispatch_queue {
+            device.set_dispatch_queue(queue); 
+        }
+        Ok(device)
+    }
 }
 
 pub struct DeviceWatcher {

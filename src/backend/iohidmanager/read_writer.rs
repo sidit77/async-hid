@@ -1,5 +1,5 @@
 use crate::backend::iohidmanager::device_info::property_key;
-use crate::{AsyncHidRead, AsyncHidWrite, HidError, HidResult};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
 use atomic_waker::AtomicWaker;
 use crossbeam_queue::ArrayQueue;
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
@@ -39,7 +39,10 @@ impl DeviceReadWriter {
     pub const DEVICE_OPTIONS: IOOptionBits = 0;
 
     pub fn new(device: CFRetained<IOHIDDevice>, read: bool, write: bool) -> HidResult<Self> {
-
+        if read || write {
+            ensure!(unsafe {device.open(DeviceReadWriter::DEVICE_OPTIONS) } == kIOReturnSuccess, HidError::message("Failed to open device"));
+        }
+        
         let read_state = match read {
             false => None,
             true => Some(unsafe {
