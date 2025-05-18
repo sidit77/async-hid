@@ -93,7 +93,7 @@ impl Backend for HidRawBackend {
 
     async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
         let DeviceId::DevPath(id) = id;
-        Ok(get_device_info_raw(id.clone())?)
+        get_device_info_raw(id.clone())
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {

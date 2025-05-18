@@ -44,7 +44,7 @@ impl Default for IoHidManagerBackendInner {
         unsafe {
             trace!("Creating manager");
             let manager = IOHIDManager::new(None, IOHIDManagerOptions::None.bits());
-            manager.set_dispatch_queue(&*DISPATCH_QUEUE);
+            manager.set_dispatch_queue(&DISPATCH_QUEUE);
 
             let context = Box::into_raw(Box::new(ManagerCallbackContext::default()));
             manager.set_device_matching(None);

@@ -94,7 +94,7 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
             .filter(|(usage, usage_page)| (*usage_page != primary_usage_page) || (*usage != primary_usage_id))
             .map(move |(usage, usage_page)| DeviceInfo {
                 usage_id: usage,
-                usage_page: usage_page,
+                usage_page,
                 ..primary_info.clone()
             })
     });
