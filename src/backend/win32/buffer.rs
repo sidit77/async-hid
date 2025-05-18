@@ -1,13 +1,15 @@
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-use std::sync::{Arc};
+use std::sync::Arc;
+
 use log::{debug, error, trace, warn};
 use windows::core::HRESULT;
 use windows::Win32::Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_FOUND};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Threading::CreateEventW;
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+
 use crate::backend::win32::device::Device;
 use crate::backend::win32::waiter::HandleWaiter;
 use crate::HidResult;
@@ -23,7 +25,7 @@ pub struct IoBuffer<T> {
     buffer: ManuallyDrop<Box<[u8]>>,
     overlapped: ManuallyDrop<Overlapped>,
     pending: bool,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<T>
 }
 
 impl<T> Debug for IoBuffer<T> {
@@ -43,17 +45,20 @@ impl<T> IoBuffer<T> {
             buffer: ManuallyDrop::new(buffer),
             overlapped: ManuallyDrop::new(overlapped),
             pending: false,
-            _marker: PhantomData,
+            _marker: PhantomData
         })
     }
 
     fn start_io<F>(&mut self, operation: F) -> HidResult<()>
-        where F: FnOnce(&Device, &mut [u8], &mut Overlapped) -> windows::core::Result<()>
+    where
+        F: FnOnce(&Device, &mut [u8], &mut Overlapped) -> windows::core::Result<()>
     {
         assert!(!self.pending, "I/O operation already pending");
         let result = operation(&self.device, &mut self.buffer, &mut self.overlapped);
         match result {
-            Ok(_) => { self.pending = true; }
+            Ok(_) => {
+                self.pending = true;
+            }
             Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
                 self.pending = true;
             }
@@ -80,21 +85,13 @@ impl<T> IoBuffer<T> {
 
     fn get_result(&mut self) -> HidResult<Option<usize>> {
         let mut bytes_transferred = 0;
-        let result = unsafe {
-            GetOverlappedResult(
-                self.device.handle(),
-                self.overlapped.as_raw(),
-                &mut bytes_transferred,
-                false
-            )
-        };
+        let result = unsafe { GetOverlappedResult(self.device.handle(), self.overlapped.as_raw(), &mut bytes_transferred, false) };
         match result {
             Ok(()) => Ok(Some(bytes_transferred as usize)),
             Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_INCOMPLETE.0) => Ok(None),
             Err(err) => Err(err.into())
         }
     }
-
 }
 
 impl<T> Drop for IoBuffer<T> {
@@ -115,24 +112,18 @@ impl<T> Drop for IoBuffer<T> {
 }
 
 impl IoBuffer<Readable> {
-
     fn start_read(&mut self) -> HidResult<()> {
         self.start_io(|device, buffer, overlapped| unsafe {
             trace!("Starting new read operation");
-            ReadFile(
-                device.handle(),
-                Some(buffer),
-                None,
-                Some(overlapped.as_raw_mut()),
-            )
+            ReadFile(device.handle(), Some(buffer), None, Some(overlapped.as_raw_mut()))
         })
     }
 
-    pub async fn read(&mut self, buf: &mut[u8]) -> HidResult<usize> {
+    pub async fn read(&mut self, buf: &mut [u8]) -> HidResult<usize> {
         loop {
             match self.pending {
                 false => self.start_read()?,
-                true => match self.get_result()?{
+                true => match self.get_result()? {
                     Some(size) => {
                         trace!("Completed read operation (retrieved {} bytes)", size);
                         let mut data = &self.buffer[..size];
@@ -141,14 +132,18 @@ impl IoBuffer<Readable> {
                         }
                         let mut copy_len = data.len();
                         if copy_len > buf.len() {
-                            debug!("Input report ({}) is larger than the provided buffer ({}), truncating data", copy_len, buf.len());
+                            debug!(
+                                "Input report ({}) is larger than the provided buffer ({}), truncating data",
+                                copy_len,
+                                buf.len()
+                            );
                             copy_len = buf.len();
                         }
                         buf[..copy_len].copy_from_slice(&data[..copy_len]);
                         self.pending = false;
                         return Ok(copy_len);
-                    },
-                    None => self.overlapped.wait_for_completion().await?,
+                    }
+                    None => self.overlapped.wait_for_completion().await?
                 }
             }
         }
@@ -156,8 +151,7 @@ impl IoBuffer<Readable> {
 }
 
 impl IoBuffer<Writable> {
-
-     async fn wait_for_write_to_complete(&mut self) -> HidResult<()> {
+    async fn wait_for_write_to_complete(&mut self) -> HidResult<()> {
         if self.pending {
             loop {
                 match self.get_result()? {
@@ -165,8 +159,8 @@ impl IoBuffer<Writable> {
                         trace!("Completed write operation (transferred {} bytes)", size);
                         self.pending = false;
                         return Ok(());
-                    },
-                    None => self.overlapped.wait_for_completion().await?,
+                    }
+                    None => self.overlapped.wait_for_completion().await?
                 }
             }
         }
@@ -176,22 +170,23 @@ impl IoBuffer<Writable> {
     fn start_write(&mut self) -> HidResult<()> {
         self.start_io(|device, buffer, overlapped| unsafe {
             trace!("Starting new write operation");
-            WriteFile(
-                device.handle(),
-                Some(buffer),
-                None,
-                Some(overlapped.as_raw_mut()),
-            )
+            WriteFile(device.handle(), Some(buffer), None, Some(overlapped.as_raw_mut()))
         })
     }
 
     pub async fn write(&mut self, data: &[u8]) -> HidResult<()> {
-        self.wait_for_write_to_complete().await.unwrap_or_else(|err| error!("Abandoned write failed: {err}"));
+        self.wait_for_write_to_complete()
+            .await
+            .unwrap_or_else(|err| error!("Abandoned write failed: {err}"));
 
         trace!("Filling write buffer with data");
         let mut data_size = data.len();
         if data_size > self.buffer.len() {
-            debug!("Data size ({}) exceeds maximum buffer size ({}), truncating data", data_size, self.buffer.len());
+            debug!(
+                "Data size ({}) exceeds maximum buffer size ({}), truncating data",
+                data_size,
+                self.buffer.len()
+            );
             data_size = self.buffer.len();
         }
         self.buffer[data_size..].fill(0);
@@ -201,7 +196,6 @@ impl IoBuffer<Writable> {
         self.wait_for_write_to_complete().await?;
         Ok(())
     }
-
 }
 
 struct Overlapped {
@@ -212,7 +206,7 @@ struct Overlapped {
 impl Overlapped {
     pub fn new() -> HidResult<Self> {
         let event = unsafe { CreateEventW(None, false, false, None)? };
-        Ok(Overlapped{
+        Ok(Overlapped {
             inner: Box::into_raw(Box::new(OVERLAPPED {
                 hEvent: event,
                 ..Default::default()
@@ -232,7 +226,6 @@ impl Overlapped {
     pub fn as_raw_mut(&mut self) -> *mut OVERLAPPED {
         self.inner
     }
-
 }
 
 unsafe impl Send for Overlapped {}

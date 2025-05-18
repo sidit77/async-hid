@@ -1,26 +1,30 @@
 mod device_info;
 mod read_writer;
 
+use std::ffi::c_void;
+use std::pin::Pin;
+use std::ptr::{null, NonNull};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, Once};
+use std::task::{Context, Poll};
+
+use atomic_waker::AtomicWaker;
+use block2::RcBlock;
+use crossbeam_queue::ArrayQueue;
+use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
+use futures_lite::stream::{iter, Boxed};
+use futures_lite::{Stream, StreamExt};
+use log::{debug, trace};
+use objc2_core_foundation::{CFDictionary, CFRetained};
+use objc2_io_kit::{
+    kIOMasterPortDefault, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService
+};
+
 use crate::backend::iohidmanager::device_info::{get_device_id, get_device_info};
 use crate::backend::iohidmanager::read_writer::DeviceReadWriter;
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
 use crate::{ensure, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
-use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
-use futures_lite::stream::{iter, Boxed};
-use futures_lite::{Stream, StreamExt};
-use objc2_core_foundation::{CFDictionary, CFRetained};
-use objc2_io_kit::{kIOMasterPortDefault, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
-use std::ffi::c_void;
-use std::pin::Pin;
-use std::ptr::{null, NonNull};
-use std::sync::{Arc, LazyLock, Mutex, Once};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::task::{Context, Poll};
-use atomic_waker::AtomicWaker;
-use block2::RcBlock;
-use crossbeam_queue::ArrayQueue;
-use log::{debug, trace};
 
 static DISPATCH_QUEUE: LazyLock<DispatchRetained<DispatchQueue>> = LazyLock::new(|| DispatchQueue::new("async-hid", DispatchQueueAttr::SERIAL));
 
@@ -29,12 +33,12 @@ static DISPATCH_QUEUE: LazyLock<DispatchRetained<DispatchQueue>> = LazyLock::new
 
 pub type IoHidManagerBackend = Arc<IoHidManagerBackendInner>;
 
-pub struct IoHidManagerBackendInner{
+pub struct IoHidManagerBackendInner {
     manager: CFRetained<IOHIDManager>,
-    callback_context: *const ManagerCallbackContext,
+    callback_context: *const ManagerCallbackContext
 }
 
-//SAFETY: IOHIDManager is immediately connected to a dispatch queue, and 
+//SAFETY: IOHIDManager is immediately connected to a dispatch queue, and
 // all functions are called on that queue to the best of my knowledge
 unsafe impl Send for IoHidManagerBackendInner {}
 unsafe impl Sync for IoHidManagerBackendInner {}
@@ -55,7 +59,7 @@ impl Default for IoHidManagerBackendInner {
 
             Self {
                 manager,
-                callback_context: context as _,
+                callback_context: context as _
             }
         }
     }
@@ -123,18 +127,19 @@ impl Backend for IoHidManagerBackend {
         let rw = Arc::new(DeviceReadWriter::new(device, read, write)?);
         Ok((read.then_some(rw.clone()), write.then_some(rw)))
     }
-
-
 }
 
 fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResult<CFRetained<IOHIDDevice>> {
     let DeviceId::RegistryEntryId(id) = id;
     unsafe {
-        let service = IOServiceGetMatchingService(kIOMasterPortDefault, IORegistryEntryIDMatching(*id).map(|d|d.downcast::<CFDictionary>().unwrap()));
+        let service = IOServiceGetMatchingService(
+            kIOMasterPortDefault,
+            IORegistryEntryIDMatching(*id).map(|d| d.downcast::<CFDictionary>().unwrap())
+        );
         ensure!(service != 0, HidError::NotConnected);
         let device = IOHIDDevice::new(None, service).ok_or(HidError::message("Failed to create device"))?;
         if let Some(queue) = dispatch_queue {
-            device.set_dispatch_queue(queue); 
+            device.set_dispatch_queue(queue);
         }
         Ok(device)
     }
@@ -143,17 +148,13 @@ fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResul
 pub struct DeviceWatcher {
     id: u64,
     queue: Arc<AsyncQueue<DeviceEvent>>,
-    backend: IoHidManagerBackend,
+    backend: IoHidManagerBackend
 }
 
 impl DeviceWatcher {
     pub fn new(backend: IoHidManagerBackend) -> Self {
         let (id, queue) = backend.callback_context().register_watcher();
-        Self {
-            id,
-            queue,
-            backend
-        }
+        Self { id, queue, backend }
     }
 }
 
@@ -171,7 +172,6 @@ impl Drop for DeviceWatcher {
     }
 }
 
-
 #[derive(Default)]
 struct ManagerCallbackContext {
     next_id: AtomicU64,
@@ -179,7 +179,6 @@ struct ManagerCallbackContext {
 }
 
 impl ManagerCallbackContext {
-    
     pub fn register_watcher(&self) -> (u64, Arc<AsyncQueue<DeviceEvent>>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let queue = Arc::new(AsyncQueue::new(64));
@@ -188,20 +187,20 @@ impl ManagerCallbackContext {
         trace!("Registered watcher with id {} (total: {})", id, watchers.len());
         (id, queue)
     }
-    
+
     pub fn unregister_watcher(&self, id: u64) {
         let mut watchers = self.watchers.lock().unwrap();
         watchers.retain(|&(i, _)| i != id);
         trace!("Unregistered watcher with id {} (remaining: {})", id, watchers.len());
     }
-    
+
     fn notify_watchers(&self, event: DeviceEvent) {
         let mut watchers = self.watchers.lock().unwrap();
         for (_, queue) in watchers.iter_mut() {
             queue.force_push(event.clone());
         }
     }
-    
+
     unsafe extern "C-unwind" fn added_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void, device: NonNull<IOHIDDevice>) {
         let this: &Self = &*(context as *const Self);
         match get_device_id(device.as_ref()) {
@@ -231,15 +230,18 @@ impl<T> AsyncQueue<T> {
             waker: AtomicWaker::new()
         }
     }
-    
+
     pub fn force_push(&self, item: T) {
         self.items.force_push(item);
         self.waker.wake();
     }
-    
+
     pub fn poll_next(&self, cx: &mut Context<'_>) -> Poll<Option<T>> {
         self.waker.register(cx.waker());
-        self.items.pop().map(Some).map(Poll::Ready).unwrap_or(Poll::Pending)
+        self.items
+            .pop()
+            .map(Some)
+            .map(Poll::Ready)
+            .unwrap_or(Poll::Pending)
     }
-    
 }

@@ -1,9 +1,14 @@
-use crate::backend::win32::check_error;
 use std::ffi::c_void;
+
 use windows::core::{HRESULT, PCWSTR};
-use windows::Win32::Devices::HumanInterfaceDevice::{HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS, PHIDP_PREPARSED_DATA};
+use windows::Win32::Devices::HumanInterfaceDevice::{
+    HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidP_GetCaps,
+    HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS, PHIDP_PREPARSED_DATA
+};
 use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
+
+use crate::backend::win32::check_error;
 use crate::{ensure, HidError, HidResult};
 
 #[derive(Debug, Eq, PartialEq)]
@@ -14,7 +19,6 @@ unsafe impl Send for Device {}
 unsafe impl Sync for Device {}
 
 impl Device {
-
     pub fn open(path: PCWSTR, read: bool, write: bool) -> HidResult<Device> {
         let handle = unsafe {
             CreateFileW(
@@ -23,8 +27,9 @@ impl Device {
                     (true, false) => FILE_SHARE_READ,
                     (false, true) => FILE_SHARE_WRITE,
                     (true, true) => FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    (false, false) => FILE_SHARE_NONE,
-                }.0,
+                    (false, false) => FILE_SHARE_NONE
+                }
+                .0,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
@@ -32,12 +37,10 @@ impl Device {
                 None
             )
         };
-        handle
-            .map(Device)
-            .map_err(|e| match e {
-                e if e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
-                e => e.into()
-            })
+        handle.map(Device).map_err(|e| match e {
+            e if e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
+            e => e.into()
+        })
     }
 
     pub fn handle(&self) -> HANDLE {
@@ -58,7 +61,7 @@ impl Device {
     fn read_string(&self, func: unsafe fn(HANDLE, *mut c_void, u32) -> bool) -> Option<String> {
         let mut buffer = [0u16; 512];
         ensure!(unsafe { func(self.0, buffer.as_mut_ptr() as _, (size_of::<u16>() * buffer.len()) as u32) });
-            
+
         let serial_number = buffer
             .split(|c| *c == 0x0)
             .map(String::from_utf16_lossy)
@@ -76,7 +79,6 @@ impl Device {
         self.read_string(HidD_GetProductString)
             .ok_or_else(|| windows::core::Error::from_win32().into())
     }
-
 }
 
 impl Drop for Device {
@@ -90,7 +92,6 @@ impl Drop for Device {
 pub struct PreparsedData(PHIDP_PREPARSED_DATA);
 
 impl PreparsedData {
-
     pub fn from_device(device: &Device) -> HidResult<PreparsedData> {
         let mut preparsed_data = PHIDP_PREPARSED_DATA::default();
         check_error(unsafe { HidD_GetPreparsedData(device.0, &mut preparsed_data) })?;
@@ -102,12 +103,10 @@ impl PreparsedData {
         check_error(unsafe { HidP_GetCaps(self.0, &mut caps) } == HIDP_STATUS_SUCCESS)?;
         Ok(caps)
     }
-
 }
 
 impl Drop for PreparsedData {
     fn drop(&mut self) {
-        check_error(unsafe { HidD_FreePreparsedData(self.0) })
-            .unwrap_or_else(|err| log::warn!("Failed to free preparsed data: {}", err))
+        check_error(unsafe { HidD_FreePreparsedData(self.0) }).unwrap_or_else(|err| log::warn!("Failed to free preparsed data: {}", err))
     }
 }

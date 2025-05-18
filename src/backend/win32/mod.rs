@@ -1,20 +1,12 @@
-
-mod device;
-mod waiter;
 mod buffer;
-mod string;
+mod device;
 mod interface;
+mod string;
+mod waiter;
 
 use std::future::Future;
 use std::sync::Arc;
 
-use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
-use crate::backend::win32::device::Device;
-use crate::backend::{Backend, DeviceInfoStream};
-use crate::device_info::DeviceId;
-use crate::error::HidResult;
-use crate::traits::{AsyncHidRead, AsyncHidWrite};
-use crate::{DeviceEvent, DeviceInfo, HidError};
 use futures_lite::stream::{iter, Boxed};
 use futures_lite::StreamExt;
 use interface::Interface;
@@ -22,24 +14,29 @@ use windows::core::{HRESULT, HSTRING, PCWSTR};
 use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, CONFIGRET};
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
+
+use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
+use crate::backend::win32::device::Device;
 use crate::backend::win32::interface::DeviceNotificationStream;
+use crate::backend::{Backend, DeviceInfoStream};
+use crate::device_info::DeviceId;
+use crate::error::HidResult;
+use crate::traits::{AsyncHidRead, AsyncHidWrite};
+use crate::{DeviceEvent, DeviceInfo, HidError};
 
 #[derive(Default)]
 pub struct Win32Backend;
 
 impl Backend for Win32Backend {
-    
     type Reader = IoBuffer<Readable>;
     type Writer = IoBuffer<Writable>;
 
-    async fn enumerate(&self) -> HidResult<DeviceInfoStream>{
+    async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let device_ids = Interface::get_interface_list()?
             .iter()
             .map(HSTRING::from)
             .collect::<Vec<_>>();
-        let device_infos = device_ids
-            .into_iter()
-            .map(get_device_information);
+        let device_infos = device_ids.into_iter().map(get_device_information);
         Ok(iter(device_infos).boxed())
     }
 
@@ -51,7 +48,6 @@ impl Backend for Win32Backend {
         let DeviceId::UncPath(id) = id;
         Ok(vec![get_device_information(id.clone())?])
     }
-
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let id = match id {
@@ -95,17 +91,15 @@ fn get_device_information(id: HSTRING) -> HidResult<DeviceInfo> {
 }
 
 impl AsyncHidRead for IoBuffer<Readable> {
-
     #[inline]
-    fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output=HidResult<usize>> + Send + 'a {
+    fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + Send + 'a {
         self.read(buf)
     }
 }
 
 impl AsyncHidWrite for IoBuffer<Writable> {
-
     #[inline]
-    fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output=HidResult<()>> + Send + 'a {
+    fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a {
         self.write(buf)
     }
 }
@@ -124,7 +118,7 @@ impl From<CONFIGRET> for HidError {
         const UNKNOWN_ERROR: u32 = 0xFFFF;
         let hresult = match unsafe { CM_MapCrToWin32Err(value, UNKNOWN_ERROR) } {
             UNKNOWN_ERROR => E_FAIL,
-            win32 => HRESULT::from_win32(win32),
+            win32 => HRESULT::from_win32(win32)
         };
         HidError::from(windows::core::Error::from(hresult))
     }

@@ -34,7 +34,7 @@ pub enum DeviceId {
     #[cfg(target_os = "linux")]
     DevPath(std::path::PathBuf),
     #[cfg(target_os = "macos")]
-    RegistryEntryId(u64),
+    RegistryEntryId(u64)
 }
 assert_impl_all!(DeviceId: Send, Sync, Unpin);
 
@@ -56,7 +56,7 @@ pub struct DeviceInfo {
     /// The HID usage page
     pub usage_page: u16,
     /// The serial number of the device. Might be `None` if the device does not have a serial number or the platform/backend does not support retrieving the serial number.
-    pub serial_number: Option<String>,
+    pub serial_number: Option<String>
 }
 assert_impl_all!(DeviceInfo: Send, Sync, Unpin);
 
@@ -70,9 +70,8 @@ impl DeviceInfo {
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum DeviceEvent {
     Connected(DeviceId),
-    Disconnected(DeviceId),
+    Disconnected(DeviceId)
 }
-
 
 /// The main entry point of this library
 #[derive(Default, Clone)]
@@ -92,23 +91,19 @@ impl HidBackend {
         let steam = self.0.enumerate().await?.filter_map(|result| match result {
             Ok(info) => Some(Device {
                 backend: self.0.clone(),
-                device_info: info,
+                device_info: info
             }),
-            Err(_) => None,
+            Err(_) => None
         });
         Ok(steam)
     }
 
     /// Retrieve all device instances connected to a given id.
     pub async fn query_devices(&self, id: &DeviceId) -> HidResult<impl Iterator<Item = Device> + use<'_>> {
-        Ok(self.0
-            .query_info(id)
-            .await?
-            .into_iter()
-            .map(|info| Device {
-                backend: self.0.clone(),
-                device_info: info,
-            }))
+        Ok(self.0.query_info(id).await?.into_iter().map(|info| Device {
+            backend: self.0.clone(),
+            device_info: info
+        }))
     }
 
     /// Listen for device connect/disconnect events
@@ -117,13 +112,12 @@ impl HidBackend {
     pub fn watch(&self) -> HidResult<impl Stream<Item = DeviceEvent> + Send + Unpin> {
         self.0.watch()
     }
-    
 }
 
 /// A HID device that was detected by calling [HidBackend::enumerate]
 pub struct Device {
     backend: Arc<DynBackend>,
-    device_info: DeviceInfo,
+    device_info: DeviceInfo
 }
 
 impl Debug for Device {
@@ -139,7 +133,7 @@ impl PartialEq for Device {
         Arc::ptr_eq(&self.backend, &other.backend) && DeviceInfo::eq(&self.device_info, &other.device_info)
     }
 }
-impl Eq for Device { }
+impl Eq for Device {}
 
 impl Hash for Device {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -156,11 +150,10 @@ impl Deref for Device {
 }
 
 impl Device {
-
     pub fn to_device_info(self) -> DeviceInfo {
         self.device_info
     }
-    
+
     /// Open the device in read-only mode
     pub async fn open_readable(&self) -> HidResult<DeviceReader> {
         let (r, _) = self.backend.open(&self.id, true, false).await?;

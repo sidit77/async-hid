@@ -1,7 +1,8 @@
-use futures_lite::Stream;
 use std::pin::Pin;
 use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::task::{Context, Poll};
+
+use futures_lite::Stream;
 use windows::core::{Interface, Result};
 use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationCollection};
 use windows::Storage::Streams::IBuffer;
@@ -45,10 +46,7 @@ pub struct DeviceInformationSteam {
 
 impl From<DeviceInformationCollection> for DeviceInformationSteam {
     fn from(value: DeviceInformationCollection) -> Self {
-        Self {
-            devices: value,
-            index: 0,
-        }
+        Self { devices: value, index: 0 }
     }
 }
 
@@ -65,7 +63,8 @@ impl Stream for DeviceInformationSteam {
         let remaining = (self
             .devices
             .Size()
-            .expect("Failed to get the length of the collection") - self.index) as usize;
+            .expect("Failed to get the length of the collection")
+            - self.index) as usize;
         (remaining, Some(remaining))
     }
 }

@@ -3,6 +3,7 @@ use std::future::Future;
 use std::hash::Hash;
 
 use futures_lite::stream::Boxed;
+
 use crate::device_info::DeviceId;
 use crate::traits::{AsyncHidRead, AsyncHidWrite};
 use crate::{DeviceEvent, DeviceInfo, HidResult};
@@ -16,7 +17,7 @@ pub trait Backend: Sized + Default {
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>>;
 
     fn query_info(&self, id: &DeviceId) -> impl Future<Output = HidResult<Vec<DeviceInfo>>> + Send;
-    
+
     #[allow(clippy::type_complexity)]
     fn open(&self, id: &DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
 }
@@ -108,7 +109,7 @@ macro_rules! dyn_backend_impl {
                     )+
                 }
             }
-            
+
             fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
                 match self {
                     $(
@@ -117,7 +118,7 @@ macro_rules! dyn_backend_impl {
                     )+
                 }
             }
-            
+
              async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
                 match self {
                     $(
@@ -140,10 +141,14 @@ macro_rules! dyn_backend_impl {
 }
 
 // Rustfmt doesn't like my macro so we just declare them all with a bogus cfg attribute
-#[cfg(rustfmt)] mod win32;
-#[cfg(rustfmt)] mod winrt;
-#[cfg(rustfmt)] mod hidraw;
-#[cfg(rustfmt)] mod iohidmanager;
+#[cfg(rustfmt)]
+mod hidraw;
+#[cfg(rustfmt)]
+mod iohidmanager;
+#[cfg(rustfmt)]
+mod win32;
+#[cfg(rustfmt)]
+mod winrt;
 
 // Dynamic dispatch doesn't play well with async traits so we just generate a big enum
 // that forwards function calls the correct implementations

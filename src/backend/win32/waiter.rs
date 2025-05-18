@@ -4,10 +4,12 @@ use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
+
 use atomic_waker::AtomicWaker;
 use log::{trace, warn};
 use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Threading::{RegisterWaitForSingleObject, UnregisterWaitEx, INFINITE, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE};
+
 use crate::HidResult;
 
 pub struct HandleWaiter {
@@ -31,7 +33,7 @@ impl HandleWaiter {
         Self {
             waitable,
             registration: INVALID_HANDLE_VALUE,
-            inner: Box::into_raw(Box::new(WaitableHandleFutureInner::default())),
+            inner: Box::into_raw(Box::new(WaitableHandleFutureInner::default()))
         }
     }
 
@@ -56,7 +58,8 @@ impl HandleWaiter {
                 Some(Self::callback_func),
                 Some(self.inner as *mut c_void),
                 INFINITE,
-                WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE)?
+                WT_EXECUTEINWAITTHREAD | WT_EXECUTEONLYONCE
+            )?
         };
         Ok(())
     }
@@ -65,9 +68,14 @@ impl HandleWaiter {
         assert!(self.is_registered());
         trace!("Unregistering waitable handle ({:p}) from the I/O thread pool", self.waitable.0);
         // Calling `UnregisterWaitEx` with `INVALID_HANDLE_VALUE` will cancel the wait and wait for all callbacks functions to complete before returning.
-        unsafe {  UnregisterWaitEx(self.registration, None)?; }
+        unsafe {
+            UnregisterWaitEx(self.registration, None)?;
+        }
         self.registration = INVALID_HANDLE_VALUE;
-        trace!("Waitable handle ({:p}) was successfully unregistered from the I/O thread pool", self.waitable.0);
+        trace!(
+            "Waitable handle ({:p}) was successfully unregistered from the I/O thread pool",
+            self.waitable.0
+        );
         Ok(())
     }
 
@@ -85,16 +93,16 @@ impl HandleWaiter {
     pub fn wait(&mut self) -> HandleFuture<'_> {
         HandleFuture {
             inner: self,
-            state: FutureState::Uninitialized,
+            state: FutureState::Uninitialized
         }
     }
-
 }
 
 impl Drop for HandleWaiter {
     fn drop(&mut self) {
         if self.is_registered() {
-            self.unregister().expect("Failed to unregister waitable handle");
+            self.unregister()
+                .expect("Failed to unregister waitable handle");
         }
         // SAFETY: Calling unregister removes all external references to self.inner
         drop(unsafe { Box::from_raw(self.inner as *mut WaitableHandleFutureInner) });
@@ -110,7 +118,7 @@ enum FutureState {
 
 pub struct HandleFuture<'a> {
     inner: &'a mut HandleWaiter,
-    state: FutureState,
+    state: FutureState
 }
 
 impl<'a> Future for HandleFuture<'a> {
@@ -134,14 +142,15 @@ impl<'a> Future for HandleFuture<'a> {
                 Poll::Pending
             }
         }
-
     }
 }
 
 impl Drop for HandleFuture<'_> {
     fn drop(&mut self) {
         if self.state == FutureState::Initialized && self.inner.is_registered() {
-            self.inner.unregister().expect("Failed to unregister waitable handle");
+            self.inner
+                .unregister()
+                .expect("Failed to unregister waitable handle");
         }
     }
 }

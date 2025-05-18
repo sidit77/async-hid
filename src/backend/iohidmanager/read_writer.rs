@@ -1,19 +1,21 @@
-use crate::backend::iohidmanager::device_info::property_key;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
-use atomic_waker::AtomicWaker;
-use crossbeam_queue::ArrayQueue;
-use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
-use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
 use std::ffi::c_void;
 use std::future::{poll_fn, Future};
 use std::mem::ManuallyDrop;
-use std::ptr::{NonNull};
+use std::ptr::NonNull;
 use std::slice::from_raw_parts;
-use std::sync::{Arc, Once};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Once};
 use std::task::Poll;
-use block2::{RcBlock};
+
+use atomic_waker::AtomicWaker;
+use block2::RcBlock;
+use crossbeam_queue::ArrayQueue;
 use log::trace;
+use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
+use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
+
+use crate::backend::iohidmanager::device_info::property_key;
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
 
 pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
@@ -26,7 +28,7 @@ unsafe impl Sync for DeviceReadWriter {}
 
 struct ReaderState {
     inner: *const AsyncReportReaderInner,
-    report_buffer: ManuallyDrop<Vec<u8>>,
+    report_buffer: ManuallyDrop<Vec<u8>>
 }
 
 struct WriterState;
@@ -35,14 +37,16 @@ unsafe impl Send for ReaderState {}
 unsafe impl Sync for ReaderState {}
 
 impl DeviceReadWriter {
-
     pub const DEVICE_OPTIONS: IOOptionBits = 0;
 
     pub fn new(device: CFRetained<IOHIDDevice>, read: bool, write: bool) -> HidResult<Self> {
         if read || write {
-            ensure!(unsafe {device.open(DeviceReadWriter::DEVICE_OPTIONS) } == kIOReturnSuccess, HidError::message("Failed to open device"));
+            ensure!(
+                unsafe { device.open(DeviceReadWriter::DEVICE_OPTIONS) } == kIOReturnSuccess,
+                HidError::message("Failed to open device")
+            );
         }
-        
+
         let read_state = match read {
             false => None,
             true => Some(unsafe {
@@ -63,31 +67,31 @@ impl DeviceReadWriter {
                     Some(AsyncReportReaderInner::hid_report_callback),
                     inner.cast()
                 );
-                device.register_removal_callback(
-                    Some(AsyncReportReaderInner::hid_removal_callback),
-                    inner.cast()
-                );
+                device.register_removal_callback(Some(AsyncReportReaderInner::hid_removal_callback), inner.cast());
 
                 ReaderState {
                     inner: inner.cast(),
-                    report_buffer,
+                    report_buffer
                 }
             })
         };
 
         let write_state = write.then_some(WriterState);
-        
-        unsafe { device.activate(); }
-        Ok(Self { device, read_state, write_state })
-    }
-    
 
+        unsafe {
+            device.activate();
+        }
+        Ok(Self {
+            device,
+            read_state,
+            write_state
+        })
+    }
 }
 
 impl AsyncHidRead for Arc<DeviceReadWriter> {
-    fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output=HidResult<usize>> + Send + 'a {
-        self
-            .read_state
+    fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + Send + 'a {
+        self.read_state
             .as_ref()
             .expect("Device is not readable")
             .read(buf)
@@ -98,19 +102,23 @@ impl AsyncHidWrite for Arc<DeviceReadWriter> {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
         #[allow(non_upper_case_globals)]
         const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
-        
-        let _ = self
-            .write_state
-            .as_ref()
-            .expect("Device is not writable");
+
+        let _ = self.write_state.as_ref().expect("Device is not writable");
         let report_id = buf[0];
         let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
 
         #[allow(non_upper_case_globals)]
-        match unsafe { self.device.set_report(IOHIDReportType::Output, report_id as _, NonNull::new_unchecked(data_to_send.as_ptr() as _), data_to_send.len() as _) } {
+        match unsafe {
+            self.device.set_report(
+                IOHIDReportType::Output,
+                report_id as _,
+                NonNull::new_unchecked(data_to_send.as_ptr() as _),
+                data_to_send.len() as _
+            )
+        } {
             kIOReturnSuccess => Ok(()),
             kIOReturnBadArgument => Err(HidError::Disconnected),
-            other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
+            other => Err(HidError::message(format!("failed to set report type: {:#X}", other)))
         }
     }
 }
@@ -129,7 +137,7 @@ impl ReaderState {
                 }
                 None => match inner.removed.load(Ordering::Relaxed) {
                     true => Poll::Ready(Err(HidError::Disconnected)),
-                    false => Poll::Pending,
+                    false => Poll::Pending
                 }
             }
         })
@@ -145,32 +153,31 @@ impl Drop for DeviceReadWriter {
                     let once = once.clone();
                     move || once.call_once(|| trace!("Finished canceling device"))
                 });
-                
+
                 self.device.set_cancel_handler(RcBlock::as_ptr(&block));
                 self.device.cancel();
                 trace!("Waiting for device cancel to finish");
                 once.wait();
                 trace!("Resuming destructor of device");
             }
-            
+
             if let Some(mut state) = self.read_state.take() {
-                //SAFETY The device was canceled in the previous step, 
+                //SAFETY The device was canceled in the previous step,
                 // and therefore the callbacks that reference these buffers can no longer be called
                 ManuallyDrop::drop(&mut state.report_buffer);
                 drop(Box::<AsyncReportReaderInner>::from_raw(state.inner as *mut _));
             }
-            
+
             self.device.close(Self::DEVICE_OPTIONS);
         }
     }
 }
 
-
 struct AsyncReportReaderInner {
     full_buffers: ArrayQueue<Vec<u8>>,
     empty_buffers: ArrayQueue<Vec<u8>>,
     removed: AtomicBool,
-    waker: AtomicWaker,
+    waker: AtomicWaker
 }
 
 impl Default for AsyncReportReaderInner {
@@ -179,19 +186,19 @@ impl Default for AsyncReportReaderInner {
             full_buffers: ArrayQueue::new(64),
             empty_buffers: ArrayQueue::new(8),
             removed: AtomicBool::new(false),
-            waker: AtomicWaker::new(),
+            waker: AtomicWaker::new()
         }
     }
 }
 
 impl AsyncReportReaderInner {
-
     fn recycle_buffer(&self, buf: Vec<u8>) {
         let _ = self.empty_buffers.push(buf);
     }
 
     unsafe extern "C-unwind" fn hid_report_callback(
-        context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: NonNull<u8>, report_length: CFIndex
+        context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: NonNull<u8>,
+        report_length: CFIndex
     ) {
         let this: &Self = &*(context as *mut Self);
         let mut buffer = this.empty_buffers.pop().unwrap_or_default();
@@ -208,5 +215,4 @@ impl AsyncReportReaderInner {
         this.removed.store(true, Ordering::Relaxed);
         this.waker.wake();
     }
-
 }

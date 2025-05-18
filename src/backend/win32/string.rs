@@ -1,6 +1,7 @@
 use std::borrow::{Borrow, BorrowMut};
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
+
 use windows::core::{HSTRING, PCWSTR};
 
 #[derive(Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -210,7 +211,6 @@ unsafe impl DeviceProperty for U16StringList {
  */
 
 impl U16StringList {
-
     pub unsafe fn from_vec_unchecked(vec: Vec<u16>) -> Self {
         Self(vec)
     }
