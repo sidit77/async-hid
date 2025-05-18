@@ -1,4 +1,4 @@
-use async_hid::{Device, DeviceEvent, HidBackend, HidResult};
+use async_hid::{Device, DeviceEvent, DeviceInfo, HidBackend, HidResult};
 use futures_lite::StreamExt;
 use simple_logger::SimpleLogger;
 use std::collections::HashSet;
@@ -13,15 +13,17 @@ async fn main() -> HidResult<()> {
     let mut device_set = backend
         .enumerate()
         .await?
+        .map(Device::to_device_info)
         .collect::<HashSet<_>>()
         .await;
     
     loop {
-        //print_device_set(&device_set);
-        println!("Number of connected devices: {}", device_set.len());
+        print_device_set(&device_set);
+        //println!("Number of connected devices: {}", device_set.len());
         if let Some(event) = watcher.next().await {
+            //println!("Event: {:?}", event);
             match event {
-                DeviceEvent::Connected(id) => device_set.extend(backend.query_devices(&id).await?),
+                DeviceEvent::Connected(id) => device_set.extend(backend.query_devices(&id).await?.map(Device::to_device_info)),
                 DeviceEvent::Disconnected(id) => device_set.retain(|device| device.id != id)
             }
         }
@@ -30,7 +32,7 @@ async fn main() -> HidResult<()> {
 }
 
 #[allow(dead_code)]
-fn print_device_set(device_set: &HashSet<Device>) {
+fn print_device_set(device_set: &HashSet<DeviceInfo>) {
     println!("Connected devices:");
     for device in device_set {
         println!("  {}", if device.name.is_empty() { "(unnamed)" } else { &device.name });

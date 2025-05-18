@@ -11,7 +11,7 @@ use std::fs::{read_dir, read_to_string, OpenOptions};
 use std::io::ErrorKind;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use log::{debug, trace, warn};
@@ -57,7 +57,7 @@ impl Backend for HidRawBackend {
                         continue;
                     }
                 };
-
+                //trace!("EVENT: {}", std::str::from_utf8(&buf[0..size]).unwrap());
                 let event = match UEvent::parse(&buf[0..size]) {
                     Ok(event) => event,
                     Err(reason) => {
@@ -70,7 +70,13 @@ impl Backend for HidRawBackend {
                     continue;
                 }
 
-                let id = DeviceId::DevPath(event.dev_path.to_path_buf());
+                let dev_path = event
+                    .dev_path
+                    .components()
+                    .filter(|c| *c != Component::RootDir)
+                    .fold(PathBuf::from("/sys/"), |a,b| a.join(b));
+                    
+                let id = DeviceId::DevPath(dev_path);
                 let event = match event.action {
                     Action::Add => DeviceEvent::Connected(id),
                     Action::Remove => DeviceEvent::Disconnected(id),
@@ -83,6 +89,11 @@ impl Backend for HidRawBackend {
                 return Some((event, (socket, buf)));
             }
         }).boxed())
+    }
+
+    async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
+        let DeviceId::DevPath(id) = id;
+        Ok(get_device_info_raw(id.clone())?)
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
@@ -121,7 +132,11 @@ impl Backend for HidRawBackend {
 }
 
 fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
-    let properties = read_to_string(path.join("device/uevent"))?;
+    let properties = read_to_string(path.join("device/uevent"))
+        .map_err(|err| match err {
+            err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
+            err => err.into(),
+        })?;
 
     let (_bus, vendor_id, product_id) = read_property(&properties, "HID_ID")
         .and_then(parse_hid_vid_pid)

@@ -157,7 +157,10 @@ impl Deref for Device {
 
 impl Device {
 
-
+    pub fn to_device_info(self) -> DeviceInfo {
+        self.device_info
+    }
+    
     /// Open the device in read-only mode
     pub async fn open_readable(&self) -> HidResult<DeviceReader> {
         let (r, _) = self.backend.open(&self.id, true, false).await?;
