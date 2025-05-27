@@ -1,6 +1,7 @@
 mod device_info;
 mod read_writer;
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::pin::Pin;
 use std::ptr::{null, NonNull};
@@ -175,7 +176,8 @@ impl Drop for DeviceWatcher {
 #[derive(Default)]
 struct ManagerCallbackContext {
     next_id: AtomicU64,
-    watchers: Mutex<Vec<(u64, Arc<AsyncQueue<DeviceEvent>>)>>
+    watchers: Mutex<Vec<(u64, Arc<AsyncQueue<DeviceEvent>>)>>,
+    devices: Mutex<HashMap<NonNull<IOHIDDevice>, DeviceId>>
 }
 
 impl ManagerCallbackContext {
@@ -204,16 +206,21 @@ impl ManagerCallbackContext {
     unsafe extern "C-unwind" fn added_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void, device: NonNull<IOHIDDevice>) {
         let this: &Self = &*(context as *const Self);
         match get_device_id(device.as_ref()) {
-            Ok(id) => this.notify_watchers(DeviceEvent::Connected(id)),
+            Ok(id) => {
+                let mut devices = this.devices.lock().unwrap();
+                devices.insert(device, id.clone());
+                this.notify_watchers(DeviceEvent::Connected(id));
+            }
             Err(err) => debug!("Failed to get device id: {}", err)
         }
     }
 
     unsafe extern "C-unwind" fn removed_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void, device: NonNull<IOHIDDevice>) {
         let this: &Self = &*(context as *const Self);
-        match get_device_id(device.as_ref()) {
-            Ok(id) => this.notify_watchers(DeviceEvent::Disconnected(id)),
-            Err(err) => debug!("Failed to get device id: {}", err)
+        let mut devices = this.devices.lock().unwrap();
+        match devices.remove(&device) {
+            Some(id) => this.notify_watchers(DeviceEvent::Disconnected(id)),
+            None => debug!("Device disconnected but ID not found")
         }
     }
 }
