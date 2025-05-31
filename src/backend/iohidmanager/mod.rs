@@ -15,7 +15,7 @@ use crossbeam_queue::ArrayQueue;
 use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
 use futures_lite::stream::{iter, Boxed};
 use futures_lite::{Stream, StreamExt};
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use objc2_core_foundation::{CFDictionary, CFRetained};
 use objc2_io_kit::{
     kIOMasterPortDefault, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService
@@ -207,8 +207,9 @@ impl ManagerCallbackContext {
         let this: &Self = &*(context as *const Self);
         match get_device_id(device.as_ref()) {
             Ok(id) => {
-                let mut devices = this.devices.lock().unwrap();
-                devices.insert(device, id.clone());
+                if let Some(prev_id) = this.devices.lock().unwrap().insert(device, id.clone()) {
+                    warn!("Device {:p} connected with {:?} already has a stored device id {:?}", device, id, prev_id);
+                }
                 this.notify_watchers(DeviceEvent::Connected(id));
             }
             Err(err) => debug!("Failed to get device id: {}", err)
@@ -217,8 +218,8 @@ impl ManagerCallbackContext {
 
     unsafe extern "C-unwind" fn removed_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void, device: NonNull<IOHIDDevice>) {
         let this: &Self = &*(context as *const Self);
-        let mut devices = this.devices.lock().unwrap();
-        match devices.remove(&device) {
+        let device_id = this.devices.lock().unwrap().remove(&device);
+        match device_id {
             Some(id) => this.notify_watchers(DeviceEvent::Disconnected(id)),
             None => debug!("Device disconnected but ID not found")
         }
