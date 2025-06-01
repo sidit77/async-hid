@@ -69,7 +69,7 @@ impl HandleWaiter {
         trace!("Unregistering waitable handle ({:p}) from the I/O thread pool", self.waitable.0);
         // Calling `UnregisterWaitEx` with `INVALID_HANDLE_VALUE` will cancel the wait and wait for all callbacks functions to complete before returning.
         unsafe {
-            UnregisterWaitEx(self.registration, None)?;
+            UnregisterWaitEx(self.registration, Some(INVALID_HANDLE_VALUE))?;
         }
         self.registration = INVALID_HANDLE_VALUE;
         trace!(
