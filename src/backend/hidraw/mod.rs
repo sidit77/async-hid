@@ -7,7 +7,6 @@ use std::io::ErrorKind;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::process;
 use std::sync::Arc;
 
 use futures_lite::stream::{iter, unfold, Boxed};
@@ -52,7 +51,7 @@ impl Backend for HidRawBackend {
             SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK,
             SockProtocol::NetlinkKObjectUEvent
         )?;
-        bind(socket.as_raw_fd(), &NetlinkAddr::new(process::id(), MONITOR_GROUP_UDEV))?;
+        bind(socket.as_raw_fd(), &NetlinkAddr::new(0, MONITOR_GROUP_UDEV))?;
 
         Ok(unfold((AsyncFd::new(socket)?, vec![0u8; 4096]), |(socket, mut buf)| async move {
             loop {
