@@ -19,8 +19,8 @@ async fn main() -> HidResult<()> {
         .await;
 
     loop {
-        print_device_set(&device_set);
-        //println!("Number of connected devices: {}", device_set.len());
+        //print_device_set(&device_set);
+        println!("Number of connected devices: {}", device_set.len());
         if let Some(event) = watcher.next().await {
             //println!("Event: {:?}", event);
             match event {

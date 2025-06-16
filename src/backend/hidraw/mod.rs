@@ -42,13 +42,17 @@ impl Backend for HidRawBackend {
     }
 
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
+      
+        const MONITOR_GROUP_KERNEL: u32 = 1;
+        const MONITOR_GROUP_UDEV: u32 = 2;
+
         let socket = socket(
             AddressFamily::Netlink,
             SockType::Datagram,
             SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK,
             SockProtocol::NetlinkKObjectUEvent
         )?;
-        bind(socket.as_raw_fd(), &NetlinkAddr::new(process::id(), 1))?;
+        bind(socket.as_raw_fd(), &NetlinkAddr::new(process::id(), MONITOR_GROUP_UDEV))?;
 
         Ok(unfold((AsyncFd::new(socket)?, vec![0u8; 4096]), |(socket, mut buf)| async move {
             loop {
@@ -63,7 +67,7 @@ impl Backend for HidRawBackend {
                         continue;
                     }
                 };
-                //trace!("EVENT: {}", std::str::from_utf8(&buf[0..size]).unwrap());
+                //trace!("EVENT: {}", buf[0..size].escape_ascii());
                 let event = match UEvent::parse(&buf[0..size]) {
                     Ok(event) => event,
                     Err(reason) => {
@@ -71,7 +75,7 @@ impl Backend for HidRawBackend {
                         continue;
                     }
                 };
-
+                //trace!("{:?}", event);
                 if event.subsystem != "hidraw" {
                     continue;
                 }
