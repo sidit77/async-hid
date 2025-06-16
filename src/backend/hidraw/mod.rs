@@ -15,7 +15,7 @@ use log::{debug, trace, warn};
 use nix::fcntl::OFlag;
 use nix::libc::EIO;
 use nix::sys::socket::{bind, recvfrom, socket, AddressFamily, NetlinkAddr, SockFlag, SockProtocol, SockType};
-use nix::unistd::{read, write};
+use nix::unistd::{access, read, write, AccessFlags};
 
 use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
@@ -41,7 +41,6 @@ impl Backend for HidRawBackend {
     }
 
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
-      
         const MONITOR_GROUP_KERNEL: u32 = 1;
         const MONITOR_GROUP_UDEV: u32 = 2;
 
@@ -51,7 +50,17 @@ impl Backend for HidRawBackend {
             SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK,
             SockProtocol::NetlinkKObjectUEvent
         )?;
-        bind(socket.as_raw_fd(), &NetlinkAddr::new(0, MONITOR_GROUP_UDEV))?;
+        let group = match access("/run/udev/control", AccessFlags::F_OK) {
+            Ok(_) => {
+                trace!("Udev deamon seems to be running, binding to udev monitor group");
+                MONITOR_GROUP_UDEV
+            },
+            Err(err) => {
+                trace!("Udev deamon seems not to be running ({:?}), binding to kernel monitor group", err);
+                MONITOR_GROUP_KERNEL
+            }
+        };
+        bind(socket.as_raw_fd(), &NetlinkAddr::new(0, group))?;
 
         Ok(unfold((AsyncFd::new(socket)?, vec![0u8; 4096]), |(socket, mut buf)| async move {
             loop {
