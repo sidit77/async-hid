@@ -45,7 +45,7 @@ impl Backend for HidRawBackend {
         let socket = socket(
             AddressFamily::Netlink,
             SockType::Datagram,
-            SockFlag::SOCK_CLOEXEC,
+            SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK,
             SockProtocol::NetlinkKObjectUEvent
         )?;
         bind(socket.as_raw_fd(), &NetlinkAddr::new(process::id(), 1))?;
