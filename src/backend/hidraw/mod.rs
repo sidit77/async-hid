@@ -54,7 +54,7 @@ impl Backend for HidRawBackend {
             Ok(_) => {
                 trace!("Udev deamon seems to be running, binding to udev monitor group");
                 MONITOR_GROUP_UDEV
-            },
+            }
             Err(err) => {
                 trace!("Udev deamon seems not to be running ({:?}), binding to kernel monitor group", err);
                 MONITOR_GROUP_KERNEL
