@@ -7,7 +7,6 @@ use std::io::ErrorKind;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
-use std::process;
 use std::sync::Arc;
 
 use futures_lite::stream::{iter, unfold, Boxed};
@@ -16,7 +15,7 @@ use log::{debug, trace, warn};
 use nix::fcntl::OFlag;
 use nix::libc::EIO;
 use nix::sys::socket::{bind, recvfrom, socket, AddressFamily, NetlinkAddr, SockFlag, SockProtocol, SockType};
-use nix::unistd::{read, write};
+use nix::unistd::{access, read, write, AccessFlags};
 
 use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
@@ -42,13 +41,26 @@ impl Backend for HidRawBackend {
     }
 
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
+        const MONITOR_GROUP_KERNEL: u32 = 1;
+        const MONITOR_GROUP_UDEV: u32 = 2;
+
         let socket = socket(
             AddressFamily::Netlink,
             SockType::Datagram,
             SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK,
             SockProtocol::NetlinkKObjectUEvent
         )?;
-        bind(socket.as_raw_fd(), &NetlinkAddr::new(process::id(), 1))?;
+        let group = match access("/run/udev/control", AccessFlags::F_OK) {
+            Ok(_) => {
+                trace!("Udev deamon seems to be running, binding to udev monitor group");
+                MONITOR_GROUP_UDEV
+            }
+            Err(err) => {
+                trace!("Udev deamon seems not to be running ({:?}), binding to kernel monitor group", err);
+                MONITOR_GROUP_KERNEL
+            }
+        };
+        bind(socket.as_raw_fd(), &NetlinkAddr::new(0, group))?;
 
         Ok(unfold((AsyncFd::new(socket)?, vec![0u8; 4096]), |(socket, mut buf)| async move {
             loop {
@@ -63,7 +75,7 @@ impl Backend for HidRawBackend {
                         continue;
                     }
                 };
-                //trace!("EVENT: {}", std::str::from_utf8(&buf[0..size]).unwrap());
+                //trace!("EVENT: {}", buf[0..size].escape_ascii());
                 let event = match UEvent::parse(&buf[0..size]) {
                     Ok(event) => event,
                     Err(reason) => {
@@ -71,7 +83,7 @@ impl Backend for HidRawBackend {
                         continue;
                     }
                 };
-
+                //trace!("{:?}", event);
                 if event.subsystem != "hidraw" {
                     continue;
                 }
