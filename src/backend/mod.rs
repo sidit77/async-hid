@@ -5,12 +5,12 @@ use std::hash::Hash;
 use futures_lite::stream::Boxed;
 
 use crate::device_info::DeviceId;
-use crate::traits::{AsyncHidRead, AsyncHidWrite};
+use crate::traits::{AsyncHidRead, AsyncHidWrite, HidOperations};
 use crate::{DeviceEvent, DeviceInfo, HidResult};
 
 pub type DeviceInfoStream = Boxed<HidResult<DeviceInfo>>;
 pub trait Backend: Sized + Default {
-    type Reader: AsyncHidRead + Send + Sync;
+    type Reader: AsyncHidRead + HidOperations + Send + Sync;
     type Writer: AsyncHidWrite + Send + Sync;
 
     fn enumerate(&self) -> impl Future<Output = HidResult<DeviceInfoStream>> + Send;
@@ -58,6 +58,26 @@ macro_rules! dyn_backend_impl {
                     $(
                         $(#[$module_attrs])*$(#[$item_attrs])*
                         Self::$name(i) => i.read_input_report(buf).await,
+                    )+
+                }
+            }
+        }
+
+        impl HidOperations for DynReader {
+            fn get_input_report(&self) -> HidResult<Vec<u8>> {
+                match self {
+                    $(
+                        $(#[$module_attrs])*$(#[$item_attrs])*
+                        Self::$name(i) => i.get_input_report(),
+                    )+
+                }
+            }
+
+            fn get_feature_report(&self) -> HidResult<Vec<u8>> {
+                match self {
+                    $(
+                        $(#[$module_attrs])*$(#[$item_attrs])*
+                        Self::$name(i) => i.get_feature_report(),
                     )+
                 }
             }

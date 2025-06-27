@@ -19,3 +19,16 @@ pub trait AsyncHidWrite {
     /// The first byte must be the report id. If the device does not use numbered report the first by must be set to 0x0
     fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a;
 }
+
+/// Provides additional operations for HID devices
+pub trait HidOperations {
+    /// Get the input report from the HID device.
+    /// 
+    /// Only use to do immediate reads of the input report.
+    /// This should not be used to read input reports in a loop.
+    /// For that use `read_input_report` from the `AsyncHidRead` trait.
+    fn get_input_report(&self) -> HidResult<Vec<u8>>;
+    
+    /// Get the feature report from the HID device.
+    fn get_feature_report(&self) -> HidResult<Vec<u8>>;
+}

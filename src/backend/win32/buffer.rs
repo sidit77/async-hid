@@ -12,6 +12,7 @@ use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 use crate::backend::win32::device::Device;
 use crate::backend::win32::waiter::HandleWaiter;
+use crate::traits::HidOperations;
 use crate::HidResult;
 
 #[derive(Debug)]
@@ -195,6 +196,16 @@ impl IoBuffer<Writable> {
         self.start_write()?;
         self.wait_for_write_to_complete().await?;
         Ok(())
+    }
+}
+
+impl HidOperations for IoBuffer<Readable> {
+    fn get_input_report(&self) -> HidResult<Vec<u8>> {
+        self.device.get_input_report()
+    }
+
+    fn get_feature_report(&self) -> HidResult<Vec<u8>> {
+        self.device.get_feature_report()
     }
 }
 

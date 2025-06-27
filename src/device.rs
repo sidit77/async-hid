@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use crate::backend::{Backend, DynBackend};
-use crate::traits::{AsyncHidRead, AsyncHidWrite};
+use crate::traits::{AsyncHidRead, AsyncHidWrite, HidOperations};
 use crate::HidResult;
 
 /// A reader than can be used to read input reports from a HID device using [AsyncHidRead::read_input_report]
@@ -42,5 +42,17 @@ impl AsyncHidWrite for DeviceReaderWriter {
     #[inline]
     fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a {
         self.1.write_output_report(buf)
+    }
+}
+
+impl HidOperations for DeviceReader {
+    #[inline]
+    fn get_input_report(&self) -> HidResult<Vec<u8>> {
+        self.0.get_input_report()
+    }
+
+    #[inline]
+    fn get_feature_report(&self) -> HidResult<Vec<u8>> {
+        self.0.get_feature_report()
     }
 }
