@@ -12,3 +12,6 @@ pub use traits::{AsyncHidRead, AsyncHidWrite, HidOperations};
 
 pub use crate::error::{HidError, HidResult};
 pub use crate::backend::Backend;
+
+pub type Reader = <crate::backend::BackendImpl as Backend>::Reader;
+pub type Writer = <crate::backend::BackendImpl as Backend>::Writer;

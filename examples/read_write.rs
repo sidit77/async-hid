@@ -2,6 +2,8 @@ use async_hid::{AsyncHidRead, AsyncHidWrite, Device, HidBackend, HidError, HidRe
 use futures_lite::StreamExt;
 use simple_logger::SimpleLogger;
 
+use async_hid::HidOperations;
+
 #[pollster::main]
 async fn main() -> HidResult<()> {
     SimpleLogger::new().init().unwrap();
@@ -21,6 +23,12 @@ async fn main() -> HidResult<()> {
         .open()
         .await?;
 
+    let report = device.get_input_report();
+    if let Ok(report) = report {
+        println!("Input Report ({}): {report:?}", report.len());
+    } else {
+        println!("Failed to get input report: {:?}", report);
+    }
     device.write_output_report(&[0x0, 0xb0]).await?;
     let mut buffer = [0u8; 8];
     let size = device.read_input_report(&mut buffer).await?;

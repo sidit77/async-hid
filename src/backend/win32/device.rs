@@ -112,7 +112,6 @@ impl PreparsedData {
     pub fn caps(&self) -> HidResult<HIDP_CAPS> {
         let mut caps = HIDP_CAPS::default();
         check_error(unsafe { HidP_GetCaps(self.0, &mut caps) } == HIDP_STATUS_SUCCESS)?;
-        log::info!("HIDP_CAPS: {:?}", caps);
         Ok(caps)
     }
 }

@@ -25,7 +25,7 @@ pub trait Backend: Sized + Default {
 mod hidraw;
 #[cfg(target_os = "macos")]
 mod iohidmanager;
-#[cfg(all(target_os = "windows", feature = "win32"))]
+#[cfg(all(target_os = "windows", feature = "win32", not(feature = "winrt")))]
 mod win32;
 #[cfg(all(target_os = "windows", feature = "winrt"))]
 mod winrt;
