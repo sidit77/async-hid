@@ -13,10 +13,10 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
     let name = unsafe {
         device
             .property(&property_key(kIOHIDProductKey))
-            .ok_or(HidError::message("Failed to get the name"))?
-            .downcast_ref::<CFString>()
-            .unwrap()
-            .to_string()
+            .and_then(|p| p
+                .downcast_ref::<CFString>()
+                .map(|p| p.to_string()))
+            .unwrap_or_default()
     };
 
     let product_id = unsafe {

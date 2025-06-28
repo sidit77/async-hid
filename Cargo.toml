@@ -1,6 +1,6 @@
 [package]
 name = "async-hid"
-version = "0.4.3"
+version = "0.4.4"
 authors = [ "sidit77" ]
 repository = "https://github.com/sidit77/async-hid"
 description = "A async library for interacting with HID devices"
