@@ -6,37 +6,16 @@ use std::sync::Arc;
 use futures_lite::{Stream, StreamExt};
 use static_assertions::assert_impl_all;
 
-use crate::backend::{Backend, BackendType, DynBackend};
-use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
+use crate::backend::{Backend, BackendImpl};
+use crate::HidResult;
 
 /// A platform-specific identifier for a device.
-///
-/// Can be used as opaque type for equality checks or inspected with platform specific code:
-/// ```no_run
-/// # use async_hid::DeviceId;
-/// let id: DeviceId = /* ... */
-/// # panic!();
-/// match(id) {
-///    #[cfg(target_os = "windows")]
-///     DeviceId::UncPath(path) => { /* .. */ },
-///     #[cfg(target_os = "linux")]
-///     DeviceId::DevPath(path) => { /* .. */ },
-///     #[cfg(target_os = "macos")]
-///     DeviceId::RegistryEntryId(id) => { /* .. */ }
-///     _ => {}
-/// }
-/// ```
-#[non_exhaustive]
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub enum DeviceId {
-    #[cfg(target_os = "windows")]
-    UncPath(windows::core::HSTRING),
-    #[cfg(target_os = "linux")]
-    DevPath(std::path::PathBuf),
-    #[cfg(target_os = "macos")]
-    RegistryEntryId(u64)
-}
-assert_impl_all!(DeviceId: Send, Sync, Unpin);
+#[cfg(target_os = "windows")]
+pub type DeviceId = windows::core::HSTRING;
+#[cfg(target_os = "linux")]
+pub type DeviceId = std::path::PathBuf;
+#[cfg(target_os = "macos")]
+pub type DeviceId = u64;
 
 /// A struct containing basic information about a device
 ///
@@ -75,13 +54,13 @@ pub enum DeviceEvent {
 
 /// The main entry point of this library
 #[derive(Default, Clone)]
-pub struct HidBackend(Arc<DynBackend>);
+pub struct HidBackend(Arc<BackendImpl>);
 
 impl HidBackend {
     /// Create a specific backend.
     /// If you don't care and want to just use the default backend for each platform consider calling [HidBackend::default] instead
-    pub fn new(backend: BackendType) -> Self {
-        Self(Arc::new(DynBackend::new(backend)))
+    pub fn new(backend: BackendImpl) -> Self {
+        Self(Arc::new(backend))
     }
 
     /// Enumerates all **accessible** HID devices
@@ -116,7 +95,7 @@ impl HidBackend {
 
 /// A HID device that was detected by calling [HidBackend::enumerate]
 pub struct Device {
-    backend: Arc<DynBackend>,
+    backend: Arc<BackendImpl>,
     device_info: DeviceInfo
 }
 
@@ -155,21 +134,21 @@ impl Device {
     }
 
     /// Open the device in read-only mode
-    pub async fn open_readable(&self) -> HidResult<DeviceReader> {
+    pub async fn open_readable(&self) -> HidResult<<BackendImpl as Backend>::Reader> {
         let (r, _) = self.backend.open(&self.id, true, false).await?;
-        Ok(DeviceReader(r.unwrap()))
+        Ok(r.unwrap())
     }
 
     /// Open the device in write-only mode
     /// Note: Not all backends support this mode and might upgrade the permission to read+write behind the scenes
-    pub async fn open_writeable(&self) -> HidResult<DeviceWriter> {
+    pub async fn open_writeable(&self) -> HidResult<<BackendImpl as Backend>::Writer> {
         let (_, w) = self.backend.open(&self.id, false, true).await?;
-        Ok(DeviceWriter(w.unwrap()))
+        Ok(w.unwrap())
     }
 
     /// Open the device in read and write mode
-    pub async fn open(&self) -> HidResult<DeviceReaderWriter> {
+    pub async fn open(&self) -> HidResult<(<BackendImpl as Backend>::Reader, <BackendImpl as Backend>::Writer)> {
         let (r, w) = self.backend.open(&self.id, true, true).await?;
-        Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
+        Ok((r.unwrap(), w.unwrap()))
     }
 }

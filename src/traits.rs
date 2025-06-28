@@ -32,3 +32,27 @@ pub trait HidOperations {
     /// Get the feature report from the HID device.
     fn get_feature_report(&self) -> HidResult<Vec<u8>>;
 }
+
+impl<O: HidOperations, U> HidOperations for (O, U) {
+    fn get_input_report(&self) -> HidResult<Vec<u8>> {
+        self.0.get_input_report()
+    }
+
+    fn get_feature_report(&self) -> HidResult<Vec<u8>> {
+        self.0.get_feature_report()
+    }
+}
+
+impl<R: AsyncHidRead + Send, U: Send> AsyncHidRead for (R, U)
+{
+    async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
+        self.0.read_input_report(buf).await
+    }
+}
+
+impl<W: AsyncHidWrite + Send, U: Send> AsyncHidWrite for (U, W)
+{
+    async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
+        self.1.write_output_report(buf).await
+    }
+}

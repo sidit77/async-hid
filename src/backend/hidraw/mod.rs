@@ -94,10 +94,9 @@ impl Backend for HidRawBackend {
                     .filter(|c| *c != Component::RootDir)
                     .fold(PathBuf::from("/sys/"), |a, b| a.join(b));
 
-                let id = DeviceId::DevPath(dev_path);
                 let event = match event.action {
-                    Action::Add => DeviceEvent::Connected(id),
-                    Action::Remove => DeviceEvent::Disconnected(id),
+                    Action::Add => DeviceEvent::Connected(dev_path),
+                    Action::Remove => DeviceEvent::Disconnected(dev_path),
                     Action::Other(a) => {
                         trace!("Unknown hidraw event: {}", a);
                         continue;
@@ -111,13 +110,10 @@ impl Backend for HidRawBackend {
     }
 
     async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
-        let DeviceId::DevPath(id) = id;
         get_device_info_raw(id.clone())
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
-        let DeviceId::DevPath(id) = id;
-
         let properties = read_to_string(id.join("uevent")).map_err(|err| match err {
             err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
             err => err.into()
@@ -166,7 +162,7 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         .map(str::to_string);
 
     let info = DeviceInfo {
-        id: DeviceId::DevPath(path.clone()),
+        id: path.clone(),
         name,
         product_id,
         vendor_id,

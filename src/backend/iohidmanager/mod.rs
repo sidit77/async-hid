@@ -131,7 +131,6 @@ impl Backend for IoHidManagerBackend {
 }
 
 fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResult<CFRetained<IOHIDDevice>> {
-    let DeviceId::RegistryEntryId(id) = id;
     unsafe {
         let service = IOServiceGetMatchingService(
             kIOMasterPortDefault,

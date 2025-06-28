@@ -45,13 +45,12 @@ impl Backend for Win32Backend {
     }
 
     async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
-        let DeviceId::UncPath(id) = id;
         Ok(vec![get_device_information(id.clone())?])
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let id = match id {
-            DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
+            p => PCWSTR::from_raw(p.as_ptr())
         };
         let device = Arc::new(Device::open(id, read, write)?);
 
@@ -80,7 +79,7 @@ fn get_device_information(id: HSTRING) -> HidResult<DeviceInfo> {
     let caps = device.preparsed_data()?.caps()?;
     let serial_number = device.serial_number();
     Ok(DeviceInfo {
-        id: DeviceId::UncPath(id),
+        id,
         name,
         product_id: attribs.ProductID,
         vendor_id: attribs.VendorID,

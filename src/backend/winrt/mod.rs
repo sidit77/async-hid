@@ -6,8 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
 use async_channel::{Receiver, Sender, WeakSender};
-use futures_lite::stream::Boxed;
-use futures_lite::{Stream, StreamExt};
+use futures_lite::{future, stream::Boxed, {Stream, StreamExt}};
 use log::{debug, trace};
 use once_cell::sync::OnceCell;
 use windows::core::{h, Ref, HRESULT, HSTRING};
@@ -21,7 +20,7 @@ use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResult
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceInfo, HidError};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceInfo, HidError, HidOperations};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -41,7 +40,6 @@ pub struct WinRtBackend {
 }
 
 impl Backend for WinRtBackend {
-    // type DeviceId = HSTRING;
     type Reader = InputReceiver;
     type Writer = HidDevice;
 
@@ -79,7 +77,6 @@ impl Backend for WinRtBackend {
     }
 
     async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
-        let DeviceId::UncPath(id) = id;
         let info = DeviceInformation::CreateFromIdAsync(id)?.await?;
         Ok(get_device_information(info).await?.into_iter().collect())
     }
@@ -90,7 +87,6 @@ impl Backend for WinRtBackend {
             (_, true) => FileAccessMode::ReadWrite,
             (false, false) => panic!("Not supported")
         };
-        let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, mode)?
             .await
             .map_err(|err| match err {
@@ -113,7 +109,7 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<Option<D
         return Ok(None);
     };
     Ok(Some(DeviceInfo {
-        id: DeviceId::UncPath(id),
+        id,
         name,
         product_id: device.ProductId()?,
         vendor_id: device.VendorId()?,
@@ -198,6 +194,37 @@ impl AsyncHidWrite for HidDevice {
     }
 }
 
+impl HidOperations for InputReceiver {
+    fn get_input_report(&self) -> HidResult<Vec<u8>> {
+                
+        // WinRT is always asynchronous and does not support immediate reads
+        future::block_on(async { self.device.GetInputReportAsync()?.await })
+        .map_err(|err| match err {
+            e if e.code().is_ok() || e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
+            e => e.into()
+        }).and_then(|report| {
+            let buffer = report.Data()?;
+            let buffer = buffer.as_slice()?;
+            ensure!(!buffer.is_empty(), HidError::message("Input report is empty"));
+            Ok(buffer.to_vec())
+        })
+    }
+
+    fn get_feature_report(&self) -> HidResult<Vec<u8>> {
+        // WinRT is always asynchronous and does not support immediate reads
+        future::block_on(async { self.device.GetFeatureReportAsync()?.await })
+        .map_err(|err| match err {
+            e if e.code().is_ok() || e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
+            e => e.into()
+        }).and_then(|report| {
+            let buffer = report.Data()?;
+            let buffer = buffer.as_slice()?;
+            ensure!(!buffer.is_empty(), HidError::message("Input report is empty"));
+            Ok(buffer.to_vec())
+        })
+    }
+}
+
 impl WinRtBackend {
     fn initialize_watcher(&self) -> HidResult<()> {
         let _initialized = self.watcher.get_or_try_init(|| {
@@ -227,7 +254,7 @@ impl WinRtBackend {
                         .unwrap_or_else(PoisonError::into_inner)
                         .retain(|channel| {
                             channel
-                                .force_send(DeviceEvent::Disconnected(DeviceId::UncPath(id.clone())))
+                                .force_send(DeviceEvent::Disconnected(id.clone()))
                                 .is_ok()
                         });
                     Ok(())
@@ -249,7 +276,7 @@ impl WinRtBackend {
                         .unwrap_or_else(PoisonError::into_inner)
                         .retain(|channel| {
                             channel
-                                .force_send(DeviceEvent::Connected(DeviceId::UncPath(id.clone())))
+                                .force_send(DeviceEvent::Connected(id.clone()))
                                 .is_ok()
                         });
                     Ok(())
