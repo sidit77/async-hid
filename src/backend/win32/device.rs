@@ -59,7 +59,7 @@ impl Device {
     #[track_caller]
     fn read_string(&self, func: unsafe fn(HANDLE, *mut c_void, u32) -> bool) -> Option<String> {
         let mut buffer = [0u16; 512];
-        ensure!(unsafe { func(self.0, buffer.as_mut_ptr() as _, (size_of::<u16>() * buffer.len()) as u32) });
+        ensure!(unsafe { func(self.0, buffer.as_mut_ptr() as _, size_of_val(&buffer) as u32) });
 
         let serial_number = buffer
             .split(|c| *c == 0x0)
@@ -79,14 +79,14 @@ impl Device {
             .ok_or_else(|| windows::core::Error::from_win32().into())
     }
 
-    pub fn get_input_report(&self) -> HidResult<Vec<u8>> {
-        let mut buf: Vec<u8> = vec![0; 513];
+    pub fn get_input_report(&self, input_report_length: usize) -> HidResult<Vec<u8>> {
+        let mut buf: Vec<u8> = vec![0; input_report_length];
         check_error(unsafe { HidD_GetInputReport(self.0, buf.as_mut_ptr() as _, buf.capacity() as u32) })?;
         Ok(buf)
     }
 
-    pub fn get_feature_report(&self) -> HidResult<Vec<u8>> {
-        let mut buf: Vec<u8> = vec![0; 513];
+    pub fn get_feature_report(&self, feature_report_length: usize) -> HidResult<Vec<u8>> {
+        let mut buf: Vec<u8> = vec![0; feature_report_length];
         check_error(unsafe { HidD_GetFeature(self.0, buf.as_mut_ptr() as _, buf.capacity() as u32) })?;
         Ok(buf)
     }
@@ -112,6 +112,7 @@ impl PreparsedData {
     pub fn caps(&self) -> HidResult<HIDP_CAPS> {
         let mut caps = HIDP_CAPS::default();
         check_error(unsafe { HidP_GetCaps(self.0, &mut caps) } == HIDP_STATUS_SUCCESS)?;
+        log::info!("HIDP_CAPS: {:?}", caps);
         Ok(caps)
     }
 }

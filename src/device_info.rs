@@ -35,8 +35,9 @@ pub struct DeviceInfo {
     /// The HID usage page
     pub usage_page: u16,
     /// The serial number of the device. Might be `None` if the device does not have a serial number or the platform/backend does not support retrieving the serial number.
-    pub serial_number: Option<String>
+    pub serial_number: Option<String>,
 }
+
 assert_impl_all!(DeviceInfo: Send, Sync, Unpin);
 
 impl DeviceInfo {

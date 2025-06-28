@@ -133,11 +133,11 @@ impl Backend for HidRawBackend {
             })?
             .into();
 
-        let mut size = 0i32;
-        unsafe { hidraw_ioc_grdescsize(fd.as_raw_fd(), &mut size) }
+        let mut descriptor_size: i32 = 0;
+        unsafe { hidraw_ioc_grdescsize(fd.as_raw_fd(), &mut descriptor_size) }
             .map_err(|e| HidError::message(format!("ioctl(GRDESCSIZE) error for {:?}, not a HIDRAW device?: {}", id, e)))?;
 
-        let device = HidDevice(Arc::new(AsyncFd::new(fd)?));
+        let device = HidDevice { device: Arc::new(AsyncFd::new(fd)?), descriptor_size: descriptor_size as usize };
 
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
@@ -168,7 +168,7 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         vendor_id,
         usage_id: 0,
         usage_page: 0,
-        serial_number
+        serial_number,
     };
 
     let results = HidrawReportDescriptor::from_syspath(&path)
@@ -218,12 +218,14 @@ fn parse_hid_vid_pid(s: &str) -> Option<(u16, u16, u16)> {
 }
 
 #[derive(Debug, Clone)]
-#[repr(transparent)]
-pub struct HidDevice(Arc<AsyncFd>);
+pub struct HidDevice {
+    device: Arc<AsyncFd>,
+    descriptor_size: usize,
+}
 
 impl AsyncHidRead for HidDevice {
     async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
-        read_with(&self.0, |fd| read(fd.as_raw_fd(), buf).map_err(std::io::Error::from))
+        read_with(&self.device, |fd| read(fd.as_raw_fd(), buf).map_err(std::io::Error::from))
             .await
             .map_err(|err| match err {
                 err if err.raw_os_error() == Some(EIO) => HidError::Disconnected,
@@ -234,7 +236,7 @@ impl AsyncHidRead for HidDevice {
 
 impl AsyncHidWrite for HidDevice {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
-        write_with(&self.0, |fd| write(fd, buf).map_err(std::io::Error::from))
+        write_with(&self.device, |fd| write(fd, buf).map_err(std::io::Error::from))
             .await
             .map_err(|err| match err {
                 err if err.raw_os_error() == Some(EIO) => HidError::Disconnected,
@@ -246,15 +248,15 @@ impl AsyncHidWrite for HidDevice {
 
 impl HidOperations for HidDevice {
     fn get_input_report(&self) -> HidResult<Vec<u8>> {
-        let mut buf = vec![0u8; 4096];
-        unsafe { hidraw_ioc_ginput(self.0.as_raw_fd(), &mut buf) }
+        let mut buf = vec![0u8; self.descriptor_size];
+        unsafe { hidraw_ioc_ginput(self.device.as_raw_fd(), &mut buf) }
             .map_err(|e| HidError::message(format!("ioctl(GINPUT) error, not a HIDRAW device?: {}", e)))?;
         Ok(buf)
     }
 
     fn get_feature_report(&self) -> HidResult<Vec<u8>> {
-        let mut buf = vec![0u8; 4096];
-        unsafe { hidraw_ioc_get_feature(self.0.as_raw_fd(), &mut buf) }
+        let mut buf = vec![0u8; self.descriptor_size];
+        unsafe { hidraw_ioc_get_feature(self.device.as_raw_fd(), &mut buf) }
             .map_err(|e| HidError::message(format!("ioctl(GFEATURE) error, not a HIDRAW device?: {}", e)))?;
         Ok(buf)
     }
