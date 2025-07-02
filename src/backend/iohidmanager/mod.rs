@@ -18,7 +18,7 @@ use futures_lite::{Stream, StreamExt};
 use log::{debug, trace, warn};
 use objc2_core_foundation::{CFDictionary, CFRetained};
 use objc2_io_kit::{
-    kIOMasterPortDefault, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService
+    kIOMasterPortDefault, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService,
 };
 
 use crate::backend::iohidmanager::device_info::{get_device_id, get_device_info};
@@ -36,7 +36,7 @@ pub type IoHidManagerBackend = Arc<IoHidManagerBackendInner>;
 
 pub struct IoHidManagerBackendInner {
     manager: CFRetained<IOHIDManager>,
-    callback_context: *const ManagerCallbackContext
+    callback_context: *const ManagerCallbackContext,
 }
 
 //SAFETY: IOHIDManager is immediately connected to a dispatch queue, and
@@ -60,7 +60,7 @@ impl Default for IoHidManagerBackendInner {
 
             Self {
                 manager,
-                callback_context: context as _
+                callback_context: context as _,
             }
         }
     }
@@ -134,7 +134,7 @@ fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResul
     unsafe {
         let service = IOServiceGetMatchingService(
             kIOMasterPortDefault,
-            IORegistryEntryIDMatching(*id).map(|d| d.downcast::<CFDictionary>().unwrap())
+            IORegistryEntryIDMatching(*id).map(|d| d.downcast::<CFDictionary>().unwrap()),
         );
         ensure!(service != 0, HidError::NotConnected);
         let device = IOHIDDevice::new(None, service).ok_or(HidError::message("Failed to create device"))?;
@@ -148,7 +148,7 @@ fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResul
 pub struct DeviceWatcher {
     id: u64,
     queue: Arc<AsyncQueue<DeviceEvent>>,
-    backend: IoHidManagerBackend
+    backend: IoHidManagerBackend,
 }
 
 impl DeviceWatcher {
@@ -176,7 +176,7 @@ impl Drop for DeviceWatcher {
 struct ManagerCallbackContext {
     next_id: AtomicU64,
     watchers: Mutex<Vec<(u64, Arc<AsyncQueue<DeviceEvent>>)>>,
-    devices: Mutex<HashMap<NonNull<IOHIDDevice>, DeviceId>>
+    devices: Mutex<HashMap<NonNull<IOHIDDevice>, DeviceId>>,
 }
 
 impl ManagerCallbackContext {
@@ -211,7 +211,7 @@ impl ManagerCallbackContext {
                 }
                 this.notify_watchers(DeviceEvent::Connected(id));
             }
-            Err(err) => debug!("Failed to get device id: {}", err)
+            Err(err) => debug!("Failed to get device id: {}", err),
         }
     }
 
@@ -220,21 +220,21 @@ impl ManagerCallbackContext {
         let device_id = this.devices.lock().unwrap().remove(&device);
         match device_id {
             Some(id) => this.notify_watchers(DeviceEvent::Disconnected(id)),
-            None => debug!("Device disconnected but ID not found")
+            None => debug!("Device disconnected but ID not found"),
         }
     }
 }
 
 pub struct AsyncQueue<T> {
     items: ArrayQueue<T>,
-    waker: AtomicWaker
+    waker: AtomicWaker,
 }
 
 impl<T> AsyncQueue<T> {
     pub fn new(cap: usize) -> Self {
         Self {
             items: ArrayQueue::new(cap),
-            waker: AtomicWaker::new()
+            waker: AtomicWaker::new(),
         }
     }
 

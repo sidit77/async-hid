@@ -12,15 +12,17 @@ use block2::RcBlock;
 use crossbeam_queue::ArrayQueue;
 use log::trace;
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
-use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
+use objc2_io_kit::{
+    kIOHIDMaxFeatureReportSizeKey, kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn,
+};
 
 use crate::backend::iohidmanager::device_info::property_key;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, HidError, HidOperations, HidResult};
 
 pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
     read_state: Option<ReaderState>,
-    write_state: Option<WriterState>
+    write_state: Option<WriterState>,
 }
 
 unsafe impl Send for DeviceReadWriter {}
@@ -28,7 +30,7 @@ unsafe impl Sync for DeviceReadWriter {}
 
 struct ReaderState {
     inner: *const AsyncReportReaderInner,
-    report_buffer: ManuallyDrop<Vec<u8>>
+    report_buffer: ManuallyDrop<Vec<u8>>,
 }
 
 struct WriterState;
@@ -65,15 +67,15 @@ impl DeviceReadWriter {
                     NonNull::new_unchecked(report_buffer.as_mut_ptr()),
                     report_buffer.len() as CFIndex,
                     Some(AsyncReportReaderInner::hid_report_callback),
-                    inner.cast()
+                    inner.cast(),
                 );
                 device.register_removal_callback(Some(AsyncReportReaderInner::hid_removal_callback), inner.cast());
 
                 ReaderState {
                     inner: inner.cast(),
-                    report_buffer
+                    report_buffer,
                 }
-            })
+            }),
         };
 
         let write_state = write.then_some(WriterState);
@@ -84,7 +86,7 @@ impl DeviceReadWriter {
         Ok(Self {
             device,
             read_state,
-            write_state
+            write_state,
         })
     }
 }
@@ -95,6 +97,58 @@ impl AsyncHidRead for Arc<DeviceReadWriter> {
             .as_ref()
             .expect("Device is not readable")
             .read(buf)
+    }
+}
+
+impl HidOperations for Arc<DeviceReadWriter> {
+    fn get_input_report(&self) -> HidResult<Vec<u8>> {
+        let device = &self.device;
+        let max_input_report_len = unsafe {
+            device
+                .property(&property_key(kIOHIDMaxInputReportSizeKey))
+                .ok_or(HidError::message("Failed to read input report size"))?
+                .downcast_ref::<CFNumber>()
+                .and_then(|n| n.as_i32())
+                .unwrap() as usize
+        };
+
+        let mut report_buffer = vec![0u8; max_input_report_len];
+        let mut report_length: CFIndex = 512 as CFIndex;
+        unsafe {
+            device.report(
+                IOHIDReportType::Input,
+                0 as CFIndex,
+                NonNull::new_unchecked(report_buffer.as_mut_ptr()),
+                NonNull::new_unchecked(&mut report_length),
+            )
+        };
+
+        Ok(report_buffer)
+    }
+
+    fn get_feature_report(&self) -> HidResult<Vec<u8>> {
+        let device = &self.device;
+        let max_feature_report_len = unsafe {
+            device
+                .property(&property_key(kIOHIDMaxFeatureReportSizeKey))
+                .ok_or(HidError::message("Failed to read feature report size"))?
+                .downcast_ref::<CFNumber>()
+                .and_then(|n| n.as_i32())
+                .unwrap() as usize
+        };
+
+        let mut report_buffer = vec![0u8; max_feature_report_len];
+        let mut report_length: CFIndex = 512 as CFIndex;
+        unsafe {
+            device.report(
+                IOHIDReportType::Feature,
+                0 as CFIndex,
+                NonNull::new_unchecked(report_buffer.as_mut_ptr()),
+                NonNull::new_unchecked(&mut report_length),
+            )
+        };
+
+        Ok(report_buffer)
     }
 }
 
@@ -113,12 +167,12 @@ impl AsyncHidWrite for Arc<DeviceReadWriter> {
                 IOHIDReportType::Output,
                 report_id as _,
                 NonNull::new_unchecked(data_to_send.as_ptr() as _),
-                data_to_send.len() as _
+                data_to_send.len() as _,
             )
         } {
             kIOReturnSuccess => Ok(()),
             kIOReturnBadArgument => Err(HidError::Disconnected),
-            other => Err(HidError::message(format!("failed to set report type: {:#X}", other)))
+            other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
         }
     }
 }
@@ -137,8 +191,8 @@ impl ReaderState {
                 }
                 None => match inner.removed.load(Ordering::Relaxed) {
                     true => Poll::Ready(Err(HidError::Disconnected)),
-                    false => Poll::Pending
-                }
+                    false => Poll::Pending,
+                },
             }
         })
     }
@@ -177,7 +231,7 @@ struct AsyncReportReaderInner {
     full_buffers: ArrayQueue<Vec<u8>>,
     empty_buffers: ArrayQueue<Vec<u8>>,
     removed: AtomicBool,
-    waker: AtomicWaker
+    waker: AtomicWaker,
 }
 
 impl Default for AsyncReportReaderInner {
@@ -186,7 +240,7 @@ impl Default for AsyncReportReaderInner {
             full_buffers: ArrayQueue::new(64),
             empty_buffers: ArrayQueue::new(8),
             removed: AtomicBool::new(false),
-            waker: AtomicWaker::new()
+            waker: AtomicWaker::new(),
         }
     }
 }
@@ -198,7 +252,7 @@ impl AsyncReportReaderInner {
 
     unsafe extern "C-unwind" fn hid_report_callback(
         context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: NonNull<u8>,
-        report_length: CFIndex
+        report_length: CFIndex,
     ) {
         let this: &Self = &*(context as *mut Self);
         let mut buffer = this.empty_buffers.pop().unwrap_or_default();
