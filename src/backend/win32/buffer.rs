@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use log::{debug, error, trace, warn};
 use windows::core::HRESULT;
+use windows::Win32::Devices::HumanInterfaceDevice::HIDP_CAPS;
 use windows::Win32::Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_FOUND};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Threading::CreateEventW;
@@ -12,6 +13,7 @@ use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 use crate::backend::win32::device::Device;
 use crate::backend::win32::waiter::HandleWaiter;
+use crate::traits::HidOperations;
 use crate::HidResult;
 
 #[derive(Debug)]
@@ -25,6 +27,8 @@ pub struct IoBuffer<T> {
     buffer: ManuallyDrop<Box<[u8]>>,
     overlapped: ManuallyDrop<Overlapped>,
     pending: bool,
+    feature_report_length: usize,
+    input_report_length: usize,
     _marker: PhantomData<T>
 }
 
@@ -37,18 +41,6 @@ impl<T> Debug for IoBuffer<T> {
 }
 
 impl<T> IoBuffer<T> {
-    pub fn new(device: Arc<Device>, size: usize) -> HidResult<Self> {
-        let overlapped = Overlapped::new()?;
-        let buffer = vec![0; size].into_boxed_slice();
-        Ok(IoBuffer {
-            device,
-            buffer: ManuallyDrop::new(buffer),
-            overlapped: ManuallyDrop::new(overlapped),
-            pending: false,
-            _marker: PhantomData
-        })
-    }
-
     fn start_io<F>(&mut self, operation: F) -> HidResult<()>
     where
         F: FnOnce(&Device, &mut [u8], &mut Overlapped) -> windows::core::Result<()>
@@ -112,6 +104,21 @@ impl<T> Drop for IoBuffer<T> {
 }
 
 impl IoBuffer<Readable> {
+    pub fn new(device: Arc<Device>, caps: HIDP_CAPS) -> HidResult<Self> {
+        let size = caps.InputReportByteLength as usize;
+        let overlapped = Overlapped::new()?;
+        let buffer = vec![0; size].into_boxed_slice();
+        Ok(Self {
+            device,
+            feature_report_length: caps.FeatureReportByteLength as usize,
+            input_report_length: caps.InputReportByteLength as usize,
+            buffer: ManuallyDrop::new(buffer),
+            overlapped: ManuallyDrop::new(overlapped),
+            pending: false,
+            _marker: PhantomData
+        })
+    }
+
     fn start_read(&mut self) -> HidResult<()> {
         self.start_io(|device, buffer, overlapped| unsafe {
             trace!("Starting new read operation");
@@ -151,6 +158,21 @@ impl IoBuffer<Readable> {
 }
 
 impl IoBuffer<Writable> {
+    pub fn new(device: Arc<Device>, caps: HIDP_CAPS) -> HidResult<Self> {
+        let size = caps.OutputReportByteLength as usize;
+        let overlapped = Overlapped::new()?;
+        let buffer = vec![0; size].into_boxed_slice();
+        Ok(Self {
+            device,
+            feature_report_length: caps.FeatureReportByteLength as usize,
+            input_report_length: caps.InputReportByteLength as usize,
+            buffer: ManuallyDrop::new(buffer),
+            overlapped: ManuallyDrop::new(overlapped),
+            pending: false,
+            _marker: PhantomData
+        })
+    }
+
     async fn wait_for_write_to_complete(&mut self) -> HidResult<()> {
         if self.pending {
             loop {
@@ -195,6 +217,16 @@ impl IoBuffer<Writable> {
         self.start_write()?;
         self.wait_for_write_to_complete().await?;
         Ok(())
+    }
+}
+
+impl HidOperations for IoBuffer<Readable> {
+    fn get_input_report(&self) -> HidResult<Vec<u8>> {
+        self.device.get_input_report(self.input_report_length)
+    }
+
+    fn get_feature_report(&self) -> HidResult<Vec<u8>> {
+        self.device.get_feature_report(self.feature_report_length)
     }
 }
 

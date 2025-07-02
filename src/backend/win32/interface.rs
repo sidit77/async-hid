@@ -18,7 +18,7 @@ use windows::Win32::Devices::HumanInterfaceDevice::HidD_GetHidGuid;
 use windows::Win32::Foundation::ERROR_SUCCESS;
 
 use crate::backend::win32::string::U16StringList;
-use crate::{DeviceEvent, DeviceId, HidResult};
+use crate::{DeviceEvent, HidResult};
 
 pub struct Interface;
 
@@ -159,8 +159,8 @@ impl DeviceNotificationStream {
         assert_eq!(data.ClassGuid, *Interface::guid());
         let device_id = unsafe { PCWSTR::from_raw(data.SymbolicLink.as_ptr()).to_hstring() };
         let event = match action {
-            CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL => Some(DeviceEvent::Connected(DeviceId::UncPath(device_id))),
-            CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL => Some(DeviceEvent::Disconnected(DeviceId::UncPath(device_id))),
+            CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL => Some(DeviceEvent::Connected(device_id)),
+            CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL => Some(DeviceEvent::Disconnected(device_id)),
             _ => {
                 debug!("Unknown device event: {}", action.0);
                 None

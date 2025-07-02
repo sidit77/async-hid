@@ -1,7 +1,4 @@
-use std::time::Duration;
-
 use async_hid::{AsyncHidRead, HidBackend, HidResult};
-use async_io::Timer;
 use futures_lite::stream::StreamExt;
 use simple_logger::SimpleLogger;
 

@@ -45,13 +45,12 @@ impl Backend for Win32Backend {
     }
 
     async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
-        let DeviceId::UncPath(id) = id;
         Ok(vec![get_device_information(id.clone())?])
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let id = match id {
-            DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
+            p => PCWSTR::from_raw(p.as_ptr())
         };
         let device = Arc::new(Device::open(id, read, write)?);
 
@@ -62,11 +61,11 @@ impl Backend for Win32Backend {
         let caps = device.preparsed_data()?.caps()?;
 
         let read_buffer = match read {
-            true => Some(IoBuffer::<Readable>::new(device.clone(), caps.InputReportByteLength as usize)?),
+            true => Some(IoBuffer::<Readable>::new(device.clone(), caps)?),
             false => None
         };
         let write_buffer = match write {
-            true => Some(IoBuffer::<Writable>::new(device.clone(), caps.OutputReportByteLength as usize)?),
+            true => Some(IoBuffer::<Writable>::new(device.clone(), caps)?),
             false => None
         };
         Ok((read_buffer, write_buffer))
@@ -79,8 +78,9 @@ fn get_device_information(id: HSTRING) -> HidResult<DeviceInfo> {
     let attribs = device.attributes()?;
     let caps = device.preparsed_data()?.caps()?;
     let serial_number = device.serial_number();
+
     Ok(DeviceInfo {
-        id: DeviceId::UncPath(id),
+        id,
         name,
         product_id: attribs.ProductID,
         vendor_id: attribs.VendorID,

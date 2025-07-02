@@ -116,5 +116,5 @@ pub fn get_device_id(device: &IOHIDDevice) -> HidResult<DeviceId> {
         unsafe { IORegistryEntryGetRegistryEntryID(port, &mut id) } == kIOReturnSuccess,
         HidError::message("Failed to retrieve entry id")
     );
-    Ok(DeviceId::RegistryEntryId(id))
+    Ok(id)
 }
