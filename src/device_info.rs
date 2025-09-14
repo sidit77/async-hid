@@ -172,4 +172,9 @@ impl Device {
         let (r, w) = self.backend.open(&self.id, true, true).await?;
         Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
     }
+
+    /// Read a feature report from the device
+    pub async fn read_feature_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+        self.backend.read_feature_report(&self.id, buf).await
+    }
 }

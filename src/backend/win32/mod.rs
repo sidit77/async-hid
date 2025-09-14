@@ -15,7 +15,7 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, C
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
 
-use crate::backend::win32::buffer::{IoBuffer, Readable, Writable};
+use crate::backend::win32::buffer::{FeatureReadable, IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use crate::backend::win32::interface::DeviceNotificationStream;
 use crate::backend::{Backend, DeviceInfoStream};
@@ -70,6 +70,18 @@ impl Backend for Win32Backend {
             false => None
         };
         Ok((read_buffer, write_buffer))
+    }
+
+    async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
+        let id = match id {
+            DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
+        };
+
+        let device = Arc::new(Device::open(id, false, false)?);
+        let caps = device.preparsed_data()?.caps()?;
+
+        let mut feature_buffer = IoBuffer::<FeatureReadable>::new(device, caps.FeatureReportByteLength as usize)?;
+        feature_buffer.read_feature_report(buf).await
     }
 }
 

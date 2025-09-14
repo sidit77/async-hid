@@ -128,6 +128,10 @@ impl Backend for IoHidManagerBackend {
         let rw = Arc::new(DeviceReadWriter::new(device, read, write)?);
         Ok((read.then_some(rw.clone()), write.then_some(rw)))
     }
+
+    async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
+        Err(HidError::message("Not implemented"))
+    }
 }
 
 fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResult<CFRetained<IOHIDDevice>> {

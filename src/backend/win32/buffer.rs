@@ -8,7 +8,7 @@ use windows::core::HRESULT;
 use windows::Win32::Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_FOUND};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Threading::CreateEventW;
-use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
+use windows::Win32::System::IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 
 use crate::backend::win32::device::Device;
 use crate::backend::win32::waiter::HandleWaiter;
@@ -19,6 +19,9 @@ pub struct Readable;
 
 #[derive(Debug)]
 pub struct Writable;
+
+#[derive(Debug)]
+pub struct FeatureReadable;
 
 pub struct IoBuffer<T> {
     device: Arc<Device>,
@@ -196,6 +199,51 @@ impl IoBuffer<Writable> {
         self.wait_for_write_to_complete().await?;
         Ok(())
     }
+}
+
+const IOCTL_HID_GET_FEATURE: u32 = 0x000B0192;
+
+impl IoBuffer<FeatureReadable> {
+    fn start_feature_read(&mut self, report_id: u8) -> HidResult<()> {
+        self.buffer[0] = report_id;
+        self.start_io(|device, buffer, overlapped| {            
+            unsafe {
+                trace!("Starting feature read for report ID {}", report_id);
+                DeviceIoControl(
+                    device.handle(),
+                    IOCTL_HID_GET_FEATURE,
+                    None,
+                    0,
+                    Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
+                    buffer.len() as u32,
+                    None,
+                    Some(overlapped.as_raw_mut()),
+                )
+            }
+        })
+    }
+
+    pub async fn read_feature_report(&mut self, buf: &mut [u8]) -> HidResult<usize> {
+        let report_id = buf[0];
+        
+        loop {
+            match self.pending {
+                false => self.start_feature_read(report_id)?,
+                true => match self.get_result()? {
+                    Some(size) => {
+                        trace!("Completed feature read operation (retrieved {} bytes)", size);
+                        let data = &self.buffer[..size];
+                        let copy_len = std::cmp::min(data.len(), buf.len());
+                        buf[..copy_len].copy_from_slice(&data[..copy_len]);
+                        self.pending = false;
+                        return Ok(copy_len);
+                    }
+                    None => self.overlapped.wait_for_completion().await?
+                }
+            }
+        }
+    }
+
 }
 
 struct Overlapped {

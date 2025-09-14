@@ -20,6 +20,8 @@ pub trait Backend: Sized + Default {
 
     #[allow(clippy::type_complexity)]
     fn open(&self, id: &DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
+
+    fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> impl Future<Output = HidResult<usize>> + Send;
 }
 
 macro_rules! dyn_backend_impl {
@@ -100,7 +102,6 @@ macro_rules! dyn_backend_impl {
             type Reader = DynReader;
             type Writer = DynWriter;
 
-
             async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
                 match self {
                     $(
@@ -133,6 +134,15 @@ macro_rules! dyn_backend_impl {
                     $(
                         $(#[$module_attrs])*$(#[$item_attrs])*
                         Self::$name(i) => i.open(id, read, write).await.map(|(r, w)| (r.map(DynReader::$name), w.map(DynWriter::$name))),
+                    )+
+                }
+            }
+
+            async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
+                match self {
+                    $(
+                        $(#[$module_attrs])*$(#[$item_attrs])*
+                        Self::$name(i) => i.read_feature_report(id, buf).await,
                     )+
                 }
             }

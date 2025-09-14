@@ -145,6 +145,10 @@ impl Backend for HidRawBackend {
 
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
+
+    async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
+        Err(HidError::message("Not implemented"))
+    }
 }
 
 fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {

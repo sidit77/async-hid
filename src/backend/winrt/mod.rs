@@ -103,6 +103,31 @@ impl Backend for WinRtBackend {
         };
         Ok((input, read.then_some(device)))
     }
+
+    async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
+        ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+        
+        let DeviceId::UncPath(id) = id;
+
+        let device = HidDevice::FromIdAsync(id, FileAccessMode::Read)?
+            .await
+            .map_err(|err| match err {
+                e if e.code().is_ok() || e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
+                e => e.into()
+            })?;
+        
+        let report = device.GetFeatureReportByIdAsync(buf[0] as u16)?.await?;
+
+        let data = report.Data()?;
+        let data_slice = data.as_slice()?;
+
+        ensure!(!data_slice.is_empty(), HidError::message("Feature report is empty"));
+
+        let copy_size = buf.len().min(data_slice.len());
+        buf[..copy_size].copy_from_slice(&data_slice[..copy_size]);
+
+        Ok(copy_size)
+    }
 }
 
 async fn get_device_information(device: DeviceInformation) -> HidResult<Option<DeviceInfo>> {
