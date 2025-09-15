@@ -21,7 +21,7 @@ pub struct Readable;
 pub struct Writable;
 
 #[derive(Debug)]
-pub struct FeatureReadable;
+pub struct Feature;
 
 pub struct IoBuffer<T> {
     device: Arc<Device>,
@@ -203,7 +203,7 @@ impl IoBuffer<Writable> {
 
 const IOCTL_HID_GET_FEATURE: u32 = 0x000B0192;
 
-impl IoBuffer<FeatureReadable> {
+impl IoBuffer<Feature> {
     fn start_feature_read(&mut self, report_id: u8) -> HidResult<()> {
         self.buffer[0] = report_id;
         self.start_io(|device, buffer, overlapped| {            

@@ -23,7 +23,7 @@ use crate::backend::hidraw::ioctl::{hidraw_ioc_get_feature, hidraw_ioc_grdescsiz
 use crate::backend::hidraw::uevent::{Action, UEvent};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
 
 #[derive(Default)]
 pub struct HidRawBackend;
@@ -31,6 +31,7 @@ pub struct HidRawBackend;
 impl Backend for HidRawBackend {
     type Reader = HidDevice;
     type Writer = HidDevice;
+    type FeatureHandle = HidDevice;
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let devices = read_dir("/sys/class/hidraw/")?
@@ -146,21 +147,10 @@ impl Backend for HidRawBackend {
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
 
-    async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
-        ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
-
-        // Open the device for reading and writing (we need write access for feature reports)
+    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
         let (_, writer) = self.open(id, true, true).await?;
         let device = writer.ok_or(HidError::message("Failed to open device for feature report"))?;
-
-        // Use the async write_with to perform the ioctl operation asynchronously
-        let result = write_with(&device.0, |fd| {
-            unsafe { hidraw_ioc_get_feature(fd.as_raw_fd(), buf) }.map_err(std::io::Error::from)
-        })
-        .await
-        .map_err(|e| HidError::message(format!("ioctl(GET_FEATURE) error: {}", e)))?;
-
-        Ok(result as usize)
+        Ok(device)
     }
 }
 
@@ -262,6 +252,20 @@ impl AsyncHidWrite for HidDevice {
                 err => err.into()
             })
             .map(|i| debug_assert_eq!(i, buf.len()))
+    }
+}
+
+impl AsyncHidFeatureHandle for HidDevice {
+    async fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
+        ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+
+        let result = write_with(&self.0, |fd| {
+            unsafe { hidraw_ioc_get_feature(fd.as_raw_fd(), buf) }.map_err(std::io::Error::from)
+        })
+        .await
+        .map_err(|e| HidError::message(format!("ioctl(GET_FEATURE) error: {}", e)))?;
+
+        Ok(result as usize)
     }
 }
 

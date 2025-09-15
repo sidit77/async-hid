@@ -15,13 +15,13 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{CM_MapCrToWin32Err, C
 use windows::Win32::Devices::HumanInterfaceDevice::HidD_SetNumInputBuffers;
 use windows::Win32::Foundation::E_FAIL;
 
-use crate::backend::win32::buffer::{FeatureReadable, IoBuffer, Readable, Writable};
+use crate::backend::win32::buffer::{Feature, IoBuffer, Readable, Writable};
 use crate::backend::win32::device::Device;
 use crate::backend::win32::interface::DeviceNotificationStream;
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
-use crate::traits::{AsyncHidRead, AsyncHidWrite};
+use crate::traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
 use crate::{DeviceEvent, DeviceInfo, HidError};
 
 #[derive(Default)]
@@ -30,6 +30,7 @@ pub struct Win32Backend;
 impl Backend for Win32Backend {
     type Reader = IoBuffer<Readable>;
     type Writer = IoBuffer<Writable>;
+    type FeatureHandle = IoBuffer<Feature>;
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let device_ids = Interface::get_interface_list()?
@@ -72,7 +73,7 @@ impl Backend for Win32Backend {
         Ok((read_buffer, write_buffer))
     }
 
-    async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
+    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
         let id = match id {
             DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
         };
@@ -80,8 +81,8 @@ impl Backend for Win32Backend {
         let device = Arc::new(Device::open(id, false, false)?);
         let caps = device.preparsed_data()?.caps()?;
 
-        let mut feature_buffer = IoBuffer::<FeatureReadable>::new(device, caps.FeatureReportByteLength as usize)?;
-        feature_buffer.read_feature_report(buf).await
+        let feature_buffer = IoBuffer::<Feature>::new(device, caps.FeatureReportByteLength as usize)?;
+        Ok(feature_buffer)
     }
 }
 
@@ -113,6 +114,13 @@ impl AsyncHidWrite for IoBuffer<Writable> {
     #[inline]
     fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a {
         self.write(buf)
+    }
+}
+
+impl AsyncHidFeatureHandle for IoBuffer<Feature> {
+    #[inline]
+    fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + Send + 'a {
+        self.read_feature_report(buf)
     }
 }
 

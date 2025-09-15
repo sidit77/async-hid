@@ -21,7 +21,7 @@ use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResult
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceInfo, HidError};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle, DeviceEvent, DeviceInfo, HidError};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -44,6 +44,7 @@ impl Backend for WinRtBackend {
     // type DeviceId = HSTRING;
     type Reader = InputReceiver;
     type Writer = HidDevice;
+    type FeatureHandle = HidDevice;
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let devices = DeviceInformation::FindAllAsyncAqsFilter(DEVICE_SELECTOR)?.await?;
@@ -104,29 +105,15 @@ impl Backend for WinRtBackend {
         Ok((input, read.then_some(device)))
     }
 
-    async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
-        ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
-        
+    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
         let DeviceId::UncPath(id) = id;
-
         let device = HidDevice::FromIdAsync(id, FileAccessMode::Read)?
             .await
             .map_err(|err| match err {
                 e if e.code().is_ok() || e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
                 e => e.into()
             })?;
-        
-        let report = device.GetFeatureReportByIdAsync(buf[0] as u16)?.await?;
-
-        let data = report.Data()?;
-        let data_slice = data.as_slice()?;
-
-        ensure!(!data_slice.is_empty(), HidError::message("Feature report is empty"));
-
-        let copy_size = buf.len().min(data_slice.len());
-        buf[..copy_size].copy_from_slice(&data_slice[..copy_size]);
-
-        Ok(copy_size)
+        Ok(device)
     }
 }
 
@@ -220,6 +207,24 @@ impl AsyncHidWrite for HidDevice {
 
         self.SendOutputReportAsync(&report)?.await?;
         Ok(())
+    }
+}
+
+impl AsyncHidFeatureHandle for HidDevice {
+    async fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
+        ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+
+        let report = self.GetFeatureReportByIdAsync(buf[0] as u16)?.await?;
+
+        let data = report.Data()?;
+        let data_slice = data.as_slice()?;
+
+        ensure!(!data_slice.is_empty(), HidError::message("Feature report is empty"));
+
+        let copy_size = buf.len().min(data_slice.len());
+        buf[..copy_size].copy_from_slice(&data_slice[..copy_size]);
+
+        Ok(copy_size)
     }
 }
 

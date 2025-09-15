@@ -7,6 +7,7 @@ use futures_lite::{Stream, StreamExt};
 use static_assertions::assert_impl_all;
 
 use crate::backend::{Backend, BackendType, DynBackend};
+use crate::device::DeviceFeatureHandle;
 use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
 
 /// A platform-specific identifier for a device.
@@ -171,6 +172,12 @@ impl Device {
     pub async fn open(&self) -> HidResult<DeviceReaderWriter> {
         let (r, w) = self.backend.open(&self.id, true, true).await?;
         Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
+    }
+
+    /// Open the device in read and write mode
+    pub async fn open_feature_handle(&self) -> HidResult<DeviceFeatureHandle> {
+        let r = self.backend.open_feature_handle(&self.id).await?;
+        Ok(DeviceFeatureHandle(r))
     }
 
     /// Read a feature report from the device

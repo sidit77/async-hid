@@ -15,7 +15,7 @@ use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
 use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
 
 use crate::backend::iohidmanager::device_info::property_key;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
+use crate::{ensure, AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle, HidError, HidResult};
 
 pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
@@ -120,6 +120,12 @@ impl AsyncHidWrite for Arc<DeviceReadWriter> {
             kIOReturnBadArgument => Err(HidError::Disconnected),
             other => Err(HidError::message(format!("failed to set report type: {:#X}", other)))
         }
+    }
+}
+
+impl AsyncHidFeatureHandle for Arc<DeviceReadWriter> {
+    async fn read_feature_report<'a>(&'a mut self, _buf: &'a mut [u8]) -> HidResult<usize> {
+        Err(HidError::message("Not implemented"))
     }
 }
 
