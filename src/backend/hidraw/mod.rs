@@ -19,7 +19,7 @@ use nix::unistd::{access, read, write, AccessFlags};
 
 use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
-use crate::backend::hidraw::ioctl::hidraw_ioc_grdescsize;
+use crate::backend::hidraw::ioctl::{hidraw_ioc_get_feature, hidraw_ioc_grdescsize};
 use crate::backend::hidraw::uevent::{Action, UEvent};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
@@ -147,7 +147,20 @@ impl Backend for HidRawBackend {
     }
 
     async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
-        Err(HidError::message("Not implemented"))
+        ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+
+        // Open the device for reading and writing (we need write access for feature reports)
+        let (_, writer) = self.open(id, true, true).await?;
+        let device = writer.ok_or(HidError::message("Failed to open device for feature report"))?;
+
+        // Use the async write_with to perform the ioctl operation asynchronously
+        let result = write_with(&device.0, |fd| {
+            unsafe { hidraw_ioc_get_feature(fd.as_raw_fd(), buf) }.map_err(std::io::Error::from)
+        })
+        .await
+        .map_err(|e| HidError::message(format!("ioctl(GET_FEATURE) error: {}", e)))?;
+
+        Ok(result as usize)
     }
 }
 
