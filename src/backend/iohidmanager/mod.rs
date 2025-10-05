@@ -97,6 +97,7 @@ impl Drop for IoHidManagerBackendInner {
 impl Backend for IoHidManagerBackend {
     type Reader = Arc<DeviceReadWriter>;
     type Writer = Arc<DeviceReadWriter>;
+    type FeatureHandle = Arc<DeviceReadWriter>;
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let device_infos = unsafe {
@@ -127,6 +128,10 @@ impl Backend for IoHidManagerBackend {
         let device = get_device(id, Some(&*DISPATCH_QUEUE))?;
         let rw = Arc::new(DeviceReadWriter::new(device, read, write)?);
         Ok((read.then_some(rw.clone()), write.then_some(rw)))
+    }
+
+    async fn open_feature_handle(&self, _id: &DeviceId) -> HidResult<Self::FeatureHandle> {
+        Err(HidError::message("Not implemented"))
     }
 }
 

@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use crate::backend::{Backend, DynBackend};
-use crate::traits::{AsyncHidRead, AsyncHidWrite};
+use crate::traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
 use crate::HidResult;
 
 /// A reader than can be used to read input reports from a HID device using [AsyncHidRead::read_input_report]
@@ -11,6 +11,10 @@ pub struct DeviceReader(pub(crate) <DynBackend as Backend>::Reader);
 /// A writer than can be used to write output reports from a HID device using [AsyncHidWrite::write_output_report]
 #[repr(transparent)]
 pub struct DeviceWriter(pub(crate) <DynBackend as Backend>::Writer);
+
+/// A reader than can be used to read feature reports from a HID device using [AsyncHidRead::read_feature_report]
+#[repr(transparent)]
+pub struct DeviceFeatureHandle(pub(crate) <DynBackend as Backend>::FeatureHandle);
 
 /// Combination of [DeviceReader] and [DeviceWriter]
 ///
@@ -42,5 +46,12 @@ impl AsyncHidWrite for DeviceReaderWriter {
     #[inline]
     fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a {
         self.1.write_output_report(buf)
+    }
+}
+
+impl AsyncHidFeatureHandle for DeviceFeatureHandle {
+    #[inline]
+    fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + Send + 'a {
+        self.0.read_feature_report(buf)
     }
 }
