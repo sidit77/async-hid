@@ -102,6 +102,15 @@ macro_rules! dyn_backend_impl {
                     )+
                 }
             }
+
+            async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
+                match self {
+                    $(
+                        $(#[$module_attrs])*$(#[$item_attrs])*
+                        Self::$name(i) => i.write_feature_report(buf).await,
+                    )+
+                }
+            }
         }
 
          pub enum DynBackend {

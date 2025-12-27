@@ -54,4 +54,9 @@ impl AsyncHidFeatureHandle for DeviceFeatureHandle {
     fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> impl Future<Output = HidResult<usize>> + Send + 'a {
         self.0.read_feature_report(buf)
     }
+
+    #[inline]
+    fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a {
+        self.0.write_feature_report(buf)
+    }
 }
