@@ -54,7 +54,7 @@ The amount of asynchronicity that each OS provides varies. The following table g
 | Windows (Win32) | ❌️           | ️️ ❌️    | ✔️                  | ✔️                    |
 | Windows (WinRT) | ✔️           | ✔️     | ✔️                  | ✔️                    |
 | Linux           | ❌            | ❌      | ✔️                  | ✔️                    |
-| MacOS           | ❌            | ✔️     | ✔️                  | ❌                     |
+| MacOS           | ❌            | ✔️     | ✔️                  | ✔️                     |
 
 Under Linux this crate uses either `async-io` (default) or `tokio` feature for the async functionality. 
 
