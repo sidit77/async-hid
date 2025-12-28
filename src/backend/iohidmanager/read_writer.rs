@@ -10,10 +10,11 @@ use std::task::Poll;
 use atomic_waker::AtomicWaker;
 use block2::RcBlock;
 use crossbeam_queue::ArrayQueue;
-use log::trace;
+use log::{error, trace};
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
 use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
 
+use crate::backend::iohidmanager::context::CallbackContext;
 use crate::backend::iohidmanager::device_info::property_key;
 use crate::{ensure, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
 
@@ -96,8 +97,7 @@ impl DeviceReadWriter {
         let report_id = buf[0];
         let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
 
-        let inner = Box::new(AsyncReportWriterInner::default());
-        let inner = Box::into_raw(inner);
+        let context = CallbackContext::<()>::new();
 
         #[allow(non_upper_case_globals)]
         match unsafe {
@@ -107,8 +107,8 @@ impl DeviceReadWriter {
                 NonNull::new_unchecked(data_to_send.as_ptr() as _),
                 data_to_send.len() as _,
                 250.0,
-                Some(AsyncReportWriterInner::write_callback),
-                inner.cast(),
+                Some(AsyncWriterCallback::write_callback),
+                context.as_raw() as *mut _,
             )
         } {
             kIOReturnSuccess => Ok(()),
@@ -116,10 +116,8 @@ impl DeviceReadWriter {
             other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
         }?;
 
-        // Get our raw box back. The inner implements Future that can be awaited to wait for the callback
-        // to be invoked. Since we've recovered the raw Box it will also be dropped by RAII after the await
-        let inner = unsafe { Box::from_raw(inner) };
-        inner.await
+        // Nothing is returned, so just ignore the inner Option
+        context.await.map(|_| ())
     }
 
     /// Common function to read reports from the specified [`IOHIDReportType`]
@@ -138,9 +136,7 @@ impl DeviceReadWriter {
         let report_id = buf[0];
         let buffer = if report_id == 0x0 { &buf[1..] } else { buf };
 
-        let inner = Box::new(AsyncFeatureReaderInner::default());
-        let inner = Box::into_raw(inner);
-
+        let context = CallbackContext::<usize>::new();
         let mut length: CFIndex = buffer.len() as _;
 
         #[allow(non_upper_case_globals)]
@@ -151,8 +147,8 @@ impl DeviceReadWriter {
                 NonNull::new_unchecked(buffer.as_ptr() as _),
                 NonNull::new_unchecked(&mut length),
                 250.0,
-                Some(AsyncFeatureReaderInner::read_callback),
-                NonNull::new_unchecked(inner.cast()),
+                Some(AsyncReaderCallback::read_callback),
+                NonNull::new_unchecked(context.as_raw() as *mut _),
             )
         } {
             kIOReturnSuccess => Ok(()),
@@ -160,10 +156,8 @@ impl DeviceReadWriter {
             other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
         }?;
 
-        // Get our raw box back. The inner implements Future that can be awaited to wait for the callback
-        // to be invoked. Since we've recovered the raw Box it will also be dropped by RAII after the await
-        let inner = unsafe { Box::from_raw(inner) };
-        inner.await
+        // Await the context
+        context.await.map(|f| f.unwrap())
     }
 }
 
@@ -184,31 +178,6 @@ impl AsyncHidWrite for Arc<DeviceReadWriter> {
 
 impl AsyncHidFeatureHandle for Arc<DeviceReadWriter> {
     async fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
-        /*
-        #[allow(non_upper_case_globals)]
-        const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
-
-        #[allow(non_upper_case_globals)]
-        const kIOReturnOverrun: IOReturn = objc2_io_kit::kIOReturnOverrun as IOReturn;
-
-        let mut len: CFIndex = buf.len() as _;
-
-        #[allow(non_upper_case_globals)]
-        match unsafe {
-            self.device.report(
-                IOHIDReportType::Feature,
-                buf[0] as _,
-                NonNull::new_unchecked(buf.as_ptr() as _),
-                NonNull::new_unchecked(&mut len),
-            )
-        } {
-            kIOReturnSuccess => Ok(len as usize),
-            kIOReturnBadArgument => Err(HidError::Disconnected),
-            kIOReturnOverrun => Err(HidError::message("read feature report overrun")),
-            other => Err(HidError::message(format!("failed to read feature report: {:#X}", other))),
-        }
-        */
-
         self.read_report(IOHIDReportType::Feature, buf).await
     }
 
@@ -267,42 +236,6 @@ impl Drop for DeviceReadWriter {
     }
 }
 
-#[derive(Default)]
-struct AsyncReportWriterInner {
-    result: Option<IOReturn>,
-    waker: AtomicWaker,
-}
-
-impl Future for AsyncReportWriterInner {
-    #[allow(non_upper_case_globals)]
-    //const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
-    type Output = HidResult<()>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        self.waker.register(cx.waker());
-
-        #[allow(non_upper_case_globals)]
-        match self.result {
-            Some(result) => Poll::Ready(match result {
-                kIOReturnSuccess => Ok(()),
-                other => Err(HidError::message(format!("report writer callback error: {:#X}", other))),
-            }),
-            None => Poll::Pending,
-        }
-    }
-}
-
-impl AsyncReportWriterInner {
-    unsafe extern "C-unwind" fn write_callback(
-        context: *mut c_void, result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, _report: NonNull<u8>,
-        _report_length: CFIndex,
-    ) {
-        let this: &mut Self = &mut *(context as *mut Self);
-        this.result = Some(result);
-        this.waker.wake();
-    }
-}
-
 struct AsyncReportReaderInner {
     full_buffers: ArrayQueue<Vec<u8>>,
     empty_buffers: ArrayQueue<Vec<u8>>,
@@ -347,40 +280,63 @@ impl AsyncReportReaderInner {
     }
 }
 
-#[derive(Default)]
-struct AsyncFeatureReaderInner {
-    result: Option<IOReturn>,
-    size: Option<usize>,
-    waker: AtomicWaker,
-}
-
-impl Future for AsyncFeatureReaderInner {
-    #[allow(non_upper_case_globals)]
-    //const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
-    type Output = HidResult<usize>;
-
-    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        self.waker.register(cx.waker());
-
-        #[allow(non_upper_case_globals)]
-        match self.result {
-            Some(result) => Poll::Ready(match result {
-                kIOReturnSuccess => Ok(self.size.unwrap()),
-                other => Err(HidError::message(format!("report writer callback error: {:#X}", other))),
-            }),
-            None => Poll::Pending,
-        }
-    }
-}
-
-impl AsyncFeatureReaderInner {
+struct AsyncReaderCallback;
+impl AsyncReaderCallback {
     unsafe extern "C-unwind" fn read_callback(
         context: *mut c_void, result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, _report: NonNull<u8>,
         report_length: CFIndex,
     ) {
-        let this: &mut Self = &mut *(context as *mut Self);
-        this.size = Some(report_length as usize);
-        this.result = Some(result);
-        this.waker.wake();
+        let context = CallbackContext::<usize>::inner_from_raw(context);
+
+        // Check if the future has been cancelled and return
+        if context.cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+
+        {
+            // Store the report length in the result
+            let Ok(mut guard) = context.result.lock() else {
+                error!("Mutex poisoned");
+                return;
+            };
+
+            *guard = Some(report_length as usize);
+        }
+
+        // Set the return result
+        context.ret.store(result, Ordering::Relaxed);
+
+        // Mark the callback done
+        context.done.store(true, Ordering::Relaxed);
+
+        context.waker.wake();
+
+        trace!("Read callback {:?}", _report_type);
+    }
+}
+
+struct AsyncWriterCallback;
+impl AsyncWriterCallback {
+    unsafe extern "C-unwind" fn write_callback(
+        context: *mut c_void, result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, _report: NonNull<u8>,
+        _report_length: CFIndex,
+    ) {
+        let context = CallbackContext::<()>::inner_from_raw(context);
+
+        // Check if the future has been cancelled and return
+        if context.cancelled.load(Ordering::Relaxed) {
+            trace!("Write callback cancelled {:?}", _report_type);
+            return;
+        }
+
+        // Set the return result
+        context.ret.store(result, Ordering::Relaxed);
+
+        // Mark the callback done
+        context.done.store(true, Ordering::Relaxed);
+
+        context.waker.wake();
+
+        trace!("Write callback {:?}", _report_type);
     }
 }
