@@ -10,17 +10,18 @@ use std::task::Poll;
 use atomic_waker::AtomicWaker;
 use block2::RcBlock;
 use crossbeam_queue::ArrayQueue;
-use log::trace;
+use log::{error, trace};
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
 use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
 
+use crate::backend::iohidmanager::context::CallbackContext;
 use crate::backend::iohidmanager::device_info::property_key;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle, HidError, HidResult};
+use crate::{ensure, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
 
 pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
     read_state: Option<ReaderState>,
-    write_state: Option<WriterState>
+    write_state: Option<WriterState>,
 }
 
 unsafe impl Send for DeviceReadWriter {}
@@ -28,7 +29,7 @@ unsafe impl Sync for DeviceReadWriter {}
 
 struct ReaderState {
     inner: *const AsyncReportReaderInner,
-    report_buffer: ManuallyDrop<Vec<u8>>
+    report_buffer: ManuallyDrop<Vec<u8>>,
 }
 
 struct WriterState;
@@ -42,7 +43,7 @@ impl DeviceReadWriter {
     pub fn new(device: CFRetained<IOHIDDevice>, read: bool, write: bool) -> HidResult<Self> {
         if read || write {
             ensure!(
-                unsafe { device.open(DeviceReadWriter::DEVICE_OPTIONS) } == kIOReturnSuccess,
+                device.open(DeviceReadWriter::DEVICE_OPTIONS) == kIOReturnSuccess,
                 HidError::message("Failed to open device")
             );
         }
@@ -65,27 +66,98 @@ impl DeviceReadWriter {
                     NonNull::new_unchecked(report_buffer.as_mut_ptr()),
                     report_buffer.len() as CFIndex,
                     Some(AsyncReportReaderInner::hid_report_callback),
-                    inner.cast()
+                    inner.cast(),
                 );
                 device.register_removal_callback(Some(AsyncReportReaderInner::hid_removal_callback), inner.cast());
 
                 ReaderState {
                     inner: inner.cast(),
-                    report_buffer
+                    report_buffer,
                 }
-            })
+            }),
         };
 
         let write_state = write.then_some(WriterState);
 
-        unsafe {
-            device.activate();
-        }
+        device.activate();
+
         Ok(Self {
             device,
             read_state,
-            write_state
+            write_state,
         })
+    }
+
+    /// Common function to write reports from the specified [`IOHIDReportType`]
+    async fn write_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a [u8]) -> HidResult<()> {
+        #[allow(non_upper_case_globals)]
+        const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
+
+        let _ = self.write_state.as_ref().expect("Device is not writable");
+        let report_id = buf[0];
+        let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
+
+        let context = CallbackContext::<()>::new();
+
+        #[allow(non_upper_case_globals)]
+        match unsafe {
+            self.device.set_report_with_callback(
+                report_type,
+                report_id as _,
+                NonNull::new_unchecked(data_to_send.as_ptr() as _),
+                data_to_send.len() as _,
+                250.0,
+                Some(AsyncWriterCallback::write_callback),
+                context.as_raw() as *mut _,
+            )
+        } {
+            kIOReturnSuccess => Ok(()),
+            kIOReturnBadArgument => Err(HidError::Disconnected),
+            other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
+        }?;
+
+        // Nothing is returned, so just ignore the inner Option
+        context.await.map(|_| ())
+    }
+
+    /// Common function to read reports from the specified [`IOHIDReportType`]
+    /// This is only for Output for Feature type reports.
+    async fn read_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a mut [u8]) -> HidResult<usize> {
+        #[allow(non_upper_case_globals)]
+        const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
+
+        // Should never reach here for report types other that feature or output
+        match report_type {
+            IOHIDReportType::Feature | IOHIDReportType::Output => {}
+            _ => panic!("Invalid read report type"),
+        }
+
+        let _ = self.read_state.as_ref().expect("Device is not readable");
+        let report_id = buf[0];
+        let buffer = if report_id == 0x0 { &buf[1..] } else { buf };
+
+        let context = CallbackContext::<usize>::new();
+        let mut length: CFIndex = buffer.len() as _;
+
+        #[allow(non_upper_case_globals)]
+        match unsafe {
+            self.device.report_with_callback(
+                report_type,
+                report_id as _,
+                NonNull::new_unchecked(buffer.as_ptr() as _),
+                NonNull::new_unchecked(&mut length),
+                250.0,
+                Some(AsyncReaderCallback::read_callback),
+                NonNull::new_unchecked(context.as_raw() as *mut _),
+            )
+        } {
+            kIOReturnSuccess => Ok(()),
+            kIOReturnBadArgument => Err(HidError::Disconnected),
+            other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
+        }?;
+
+        // Await the context
+        context.await.map(|f| f.unwrap())
     }
 }
 
@@ -100,32 +172,17 @@ impl AsyncHidRead for Arc<DeviceReadWriter> {
 
 impl AsyncHidWrite for Arc<DeviceReadWriter> {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
-        #[allow(non_upper_case_globals)]
-        const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
-
-        let _ = self.write_state.as_ref().expect("Device is not writable");
-        let report_id = buf[0];
-        let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
-
-        #[allow(non_upper_case_globals)]
-        match unsafe {
-            self.device.set_report(
-                IOHIDReportType::Output,
-                report_id as _,
-                NonNull::new_unchecked(data_to_send.as_ptr() as _),
-                data_to_send.len() as _
-            )
-        } {
-            kIOReturnSuccess => Ok(()),
-            kIOReturnBadArgument => Err(HidError::Disconnected),
-            other => Err(HidError::message(format!("failed to set report type: {:#X}", other)))
-        }
+        self.write_report(IOHIDReportType::Output, buf).await
     }
 }
 
 impl AsyncHidFeatureHandle for Arc<DeviceReadWriter> {
-    async fn read_feature_report<'a>(&'a mut self, _buf: &'a mut [u8]) -> HidResult<usize> {
-        Err(HidError::message("Not implemented"))
+    async fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
+        self.read_report(IOHIDReportType::Feature, buf).await
+    }
+
+    async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
+        self.write_report(IOHIDReportType::Feature, buf).await
     }
 }
 
@@ -143,8 +200,8 @@ impl ReaderState {
                 }
                 None => match inner.removed.load(Ordering::Relaxed) {
                     true => Poll::Ready(Err(HidError::Disconnected)),
-                    false => Poll::Pending
-                }
+                    false => Poll::Pending,
+                },
             }
         })
     }
@@ -183,7 +240,7 @@ struct AsyncReportReaderInner {
     full_buffers: ArrayQueue<Vec<u8>>,
     empty_buffers: ArrayQueue<Vec<u8>>,
     removed: AtomicBool,
-    waker: AtomicWaker
+    waker: AtomicWaker,
 }
 
 impl Default for AsyncReportReaderInner {
@@ -192,7 +249,7 @@ impl Default for AsyncReportReaderInner {
             full_buffers: ArrayQueue::new(64),
             empty_buffers: ArrayQueue::new(8),
             removed: AtomicBool::new(false),
-            waker: AtomicWaker::new()
+            waker: AtomicWaker::new(),
         }
     }
 }
@@ -204,7 +261,7 @@ impl AsyncReportReaderInner {
 
     unsafe extern "C-unwind" fn hid_report_callback(
         context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: NonNull<u8>,
-        report_length: CFIndex
+        report_length: CFIndex,
     ) {
         let this: &Self = &*(context as *mut Self);
         let mut buffer = this.empty_buffers.pop().unwrap_or_default();
@@ -220,5 +277,66 @@ impl AsyncReportReaderInner {
         let this: &Self = &*(context as *mut Self);
         this.removed.store(true, Ordering::Relaxed);
         this.waker.wake();
+    }
+}
+
+struct AsyncReaderCallback;
+impl AsyncReaderCallback {
+    unsafe extern "C-unwind" fn read_callback(
+        context: *mut c_void, result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, _report: NonNull<u8>,
+        report_length: CFIndex,
+    ) {
+        let context = CallbackContext::<usize>::inner_from_raw(context);
+
+        // Check if the future has been cancelled and return
+        if context.cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+
+        {
+            // Store the report length in the result
+            let Ok(mut guard) = context.result.lock() else {
+                error!("Mutex poisoned");
+                return;
+            };
+
+            *guard = Some(report_length as usize);
+        }
+
+        // Set the return result
+        context.ret.store(result, Ordering::Relaxed);
+
+        // Mark the callback done
+        context.done.store(true, Ordering::Relaxed);
+
+        context.waker.wake();
+
+        trace!("Read callback {:?}", _report_type);
+    }
+}
+
+struct AsyncWriterCallback;
+impl AsyncWriterCallback {
+    unsafe extern "C-unwind" fn write_callback(
+        context: *mut c_void, result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, _report: NonNull<u8>,
+        _report_length: CFIndex,
+    ) {
+        let context = CallbackContext::<()>::inner_from_raw(context);
+
+        // Check if the future has been cancelled and return
+        if context.cancelled.load(Ordering::Relaxed) {
+            trace!("Write callback cancelled {:?}", _report_type);
+            return;
+        }
+
+        // Set the return result
+        context.ret.store(result, Ordering::Relaxed);
+
+        // Mark the callback done
+        context.done.store(true, Ordering::Relaxed);
+
+        context.waker.wake();
+
+        trace!("Write callback {:?}", _report_type);
     }
 }

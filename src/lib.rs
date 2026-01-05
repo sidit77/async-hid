@@ -9,10 +9,10 @@ mod utils;
 
 /// All available backends for the current platform
 pub use backend::BackendType;
-pub use device::{DeviceReader, DeviceReaderWriter, DeviceWriter};
+pub use device::{DeviceFeatureHandle, DeviceReader, DeviceReaderWriter, DeviceWriter};
 pub use device_info::{Device, DeviceEvent, DeviceId, DeviceInfo, HidBackend};
 use static_assertions::assert_impl_all;
-pub use traits::{AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle};
+pub use traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
 
 pub use crate::error::{HidError, HidResult};
 

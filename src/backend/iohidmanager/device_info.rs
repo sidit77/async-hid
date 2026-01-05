@@ -4,62 +4,48 @@ use std::mem::transmute;
 use objc2_core_foundation::{kCFAllocatorNull, CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFStringBuiltInEncodings};
 use objc2_io_kit::{
     kIOHIDDeviceUsageKey, kIOHIDDeviceUsagePageKey, kIOHIDDeviceUsagePairsKey, kIOHIDPrimaryUsageKey, kIOHIDPrimaryUsagePageKey, kIOHIDProductIDKey,
-    kIOHIDProductKey, kIOHIDSerialNumberKey, kIOHIDVendorIDKey, kIOReturnSuccess, IOHIDDevice, IORegistryEntryGetRegistryEntryID
+    kIOHIDProductKey, kIOHIDSerialNumberKey, kIOHIDVendorIDKey, kIOReturnSuccess, IOHIDDevice, IORegistryEntryGetRegistryEntryID,
 };
 
 use crate::{ensure, DeviceId, DeviceInfo, HidError, HidResult};
 
 pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
-    let name = unsafe {
-        device
-            .property(&property_key(kIOHIDProductKey))
-            .and_then(|p| p
-                .downcast_ref::<CFString>()
-                .map(|p| p.to_string()))
-            .unwrap_or_default()
-    };
+    let name = device
+        .property(&property_key(kIOHIDProductKey))
+        .and_then(|p| p.downcast_ref::<CFString>().map(|p| p.to_string()))
+        .unwrap_or_default();
 
-    let product_id = unsafe {
-        device
-            .property(&property_key(kIOHIDProductIDKey))
-            .ok_or(HidError::message("Failed to get the product id"))?
-            .downcast_ref::<CFNumber>()
-            .and_then(CFNumber::as_i32)
-            .unwrap() as u16
-    };
+    let product_id = device
+        .property(&property_key(kIOHIDProductIDKey))
+        .ok_or(HidError::message("Failed to get the product id"))?
+        .downcast_ref::<CFNumber>()
+        .and_then(CFNumber::as_i32)
+        .unwrap() as u16;
 
-    let vendor_id = unsafe {
-        device
-            .property(&property_key(kIOHIDVendorIDKey))
-            .ok_or(HidError::message("Failed to get the vendor id"))?
-            .downcast_ref::<CFNumber>()
-            .and_then(CFNumber::as_i32)
-            .unwrap() as u16
-    };
+    let vendor_id = device
+        .property(&property_key(kIOHIDVendorIDKey))
+        .ok_or(HidError::message("Failed to get the vendor id"))?
+        .downcast_ref::<CFNumber>()
+        .and_then(CFNumber::as_i32)
+        .unwrap() as u16;
 
-    let primary_usage_page = unsafe {
-        device
-            .property(&property_key(kIOHIDPrimaryUsagePageKey))
-            .ok_or(HidError::message("Failed to get the primary usage page"))?
-            .downcast_ref::<CFNumber>()
-            .and_then(CFNumber::as_i32)
-            .unwrap() as u16
-    };
+    let primary_usage_page = device
+        .property(&property_key(kIOHIDPrimaryUsagePageKey))
+        .ok_or(HidError::message("Failed to get the primary usage page"))?
+        .downcast_ref::<CFNumber>()
+        .and_then(CFNumber::as_i32)
+        .unwrap() as u16;
 
-    let primary_usage_id = unsafe {
-        device
-            .property(&property_key(kIOHIDPrimaryUsageKey))
-            .ok_or(HidError::message("Failed to get the primary usage id"))?
-            .downcast_ref::<CFNumber>()
-            .and_then(CFNumber::as_i32)
-            .unwrap() as u16
-    };
+    let primary_usage_id = device
+        .property(&property_key(kIOHIDPrimaryUsageKey))
+        .ok_or(HidError::message("Failed to get the primary usage id"))?
+        .downcast_ref::<CFNumber>()
+        .and_then(CFNumber::as_i32)
+        .unwrap() as u16;
 
-    let serial_number = unsafe {
-        device
-            .property(&property_key(kIOHIDSerialNumberKey))
-            .and_then(|p| p.downcast_ref::<CFString>().map(|p| p.to_string()))
-    };
+    let serial_number = device
+        .property(&property_key(kIOHIDSerialNumberKey))
+        .and_then(|p| p.downcast_ref::<CFString>().map(|p| p.to_string()));
 
     let primary_info = DeviceInfo {
         id: get_device_id(device)?,
@@ -68,7 +54,7 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
         vendor_id,
         usage_id: primary_usage_id,
         usage_page: primary_usage_page,
-        serial_number
+        serial_number,
     };
 
     let mut result = vec![primary_info.clone()];
@@ -110,7 +96,7 @@ pub fn property_key(key: &'static CStr) -> CFRetained<CFString> {
 
 pub fn get_device_id(device: &IOHIDDevice) -> HidResult<DeviceId> {
     let mut id = 0;
-    let port = unsafe { device.service() };
+    let port = device.service();
     ensure!(port != 0, HidError::message("Failed to get mach port"));
     ensure!(
         unsafe { IORegistryEntryGetRegistryEntryID(port, &mut id) } == kIOReturnSuccess,
