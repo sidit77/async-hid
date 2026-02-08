@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::{HidError, HidResult};
+use crate::HidResult;
 
 /// Provides functionality for reading from HID devices
 pub trait AsyncHidRead {
@@ -32,7 +32,5 @@ pub trait AsyncHidFeatureHandle {
     ///
     /// If the submitted report is larger that what the device expects it might be truncated depending on the backend
     /// The first byte must be the report id. If the device does not use numbered report the first by must be set to 0x0
-    fn write_feature_report<'a>(&'a mut self, _buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a {
-        async { Err(HidError::message("Not implemented")) }
-    }
+    fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> impl Future<Output = HidResult<()>> + Send + 'a;
 }

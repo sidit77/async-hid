@@ -107,7 +107,7 @@ impl Backend for WinRtBackend {
 
     async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
         let DeviceId::UncPath(id) = id;
-        let device = HidDevice::FromIdAsync(id, FileAccessMode::Read)?
+        let device = HidDevice::FromIdAsync(id, FileAccessMode::ReadWrite)?
             .await
             .map_err(|err| match err {
                 e if e.code().is_ok() || e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
@@ -225,6 +225,21 @@ impl AsyncHidFeatureHandle for HidDevice {
         buf[..copy_size].copy_from_slice(&data_slice[..copy_size]);
 
         Ok(copy_size)
+    }
+
+    async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
+        let report = self.CreateFeatureReport()?;
+
+        {
+            let mut buffer = report.Data()?;
+            ensure!(buffer.Length()? as usize >= buf.len(), HidError::message("Feature report is too large"));
+            let (buffer, remainder) = buffer.as_mut_slice()?.split_at_mut(buf.len());
+            buffer.copy_from_slice(buf);
+            remainder.fill(0);
+        }
+
+        self.SendFeatureReportAsync(&report)?.await?;
+        Ok(())
     }
 }
 

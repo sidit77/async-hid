@@ -19,7 +19,7 @@ use nix::unistd::{access, read, write, AccessFlags};
 
 use crate::backend::hidraw::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::hidraw::descriptor::HidrawReportDescriptor;
-use crate::backend::hidraw::ioctl::{hidraw_ioc_get_feature, hidraw_ioc_grdescsize};
+use crate::backend::hidraw::ioctl::{hidraw_ioc_get_feature, hidraw_ioc_set_feature, hidraw_ioc_grdescsize};
 use crate::backend::hidraw::uevent::{Action, UEvent};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
@@ -266,6 +266,19 @@ impl AsyncHidFeatureHandle for HidDevice {
         .map_err(|e| HidError::message(format!("ioctl(GET_FEATURE) error: {}", e)))?;
 
         Ok(result as usize)
+    }
+
+    async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
+        ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+
+        let mut data = buf.to_vec();
+        write_with(&self.0, |fd| {
+            unsafe { hidraw_ioc_set_feature(fd.as_raw_fd(), &mut data) }.map_err(std::io::Error::from)
+        })
+        .await
+        .map_err(|e| HidError::message(format!("ioctl(SET_FEATURE) error: {}", e)))?;
+
+        Ok(())
     }
 }
 
