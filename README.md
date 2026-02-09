@@ -59,7 +59,10 @@ The amount of asynchronicity that each OS provides varies. The following table g
 Under Linux this crate uses either `async-io` (default) or `tokio` feature for the async functionality. 
 
 ## Planned Features
-- Reading / Writing feature reports
+- Redesign how feature reads and write are integrated exposed.
+  - Allow feature reads for read-only devices?
+  - Allow opening read/write/feature handles all at once?
+- Add support for WASM via WebHID
 
 
 ## License
