@@ -52,6 +52,22 @@ impl<T> IoBuffer<T> {
         })
     }
 
+    async fn wait_for_write_to_complete(&mut self) -> HidResult<()> {
+        if self.pending {
+            loop {
+                match self.get_result()? {
+                    Some(size) => {
+                        trace!("Completed write operation (transferred {} bytes)", size);
+                        self.pending = false;
+                        return Ok(());
+                    }
+                    None => self.overlapped.wait_for_completion().await?
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn start_io<F>(&mut self, operation: F) -> HidResult<()>
     where
         F: FnOnce(&Device, &mut [u8], &mut Overlapped) -> windows::core::Result<()>
@@ -154,22 +170,6 @@ impl IoBuffer<Readable> {
 }
 
 impl IoBuffer<Writable> {
-    async fn wait_for_write_to_complete(&mut self) -> HidResult<()> {
-        if self.pending {
-            loop {
-                match self.get_result()? {
-                    Some(size) => {
-                        trace!("Completed write operation (transferred {} bytes)", size);
-                        self.pending = false;
-                        return Ok(());
-                    }
-                    None => self.overlapped.wait_for_completion().await?
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn start_write(&mut self) -> HidResult<()> {
         self.start_io(|device, buffer, overlapped| unsafe {
             trace!("Starting new write operation");
@@ -240,7 +240,7 @@ impl IoBuffer<Feature> {
 
     pub async fn read_feature_report(&mut self, buf: &mut [u8]) -> HidResult<usize> {
         let report_id = buf[0];
-        
+
         loop {
             match self.pending {
                 false => self.start_feature_read(report_id)?,
@@ -260,6 +260,10 @@ impl IoBuffer<Feature> {
     }
 
     pub async fn write_feature_report(&mut self, buf: &[u8]) -> HidResult<()> {
+        self.wait_for_write_to_complete()
+            .await
+            .unwrap_or_else(|err| error!("Abandoned feature write failed: {err}"));
+
         trace!("Filling feature write buffer with data");
         let mut data_size = buf.len();
         if data_size > self.buffer.len() {
@@ -274,16 +278,8 @@ impl IoBuffer<Feature> {
         self.buffer[..data_size].copy_from_slice(&buf[..data_size]);
 
         self.start_feature_write()?;
-        loop {
-            match self.get_result()? {
-                Some(size) => {
-                    trace!("Completed feature write operation (transferred {} bytes)", size);
-                    self.pending = false;
-                    return Ok(());
-                }
-                None => self.overlapped.wait_for_completion().await?
-            }
-        }
+        self.wait_for_write_to_complete().await?;
+        Ok(())
     }
 }
 
