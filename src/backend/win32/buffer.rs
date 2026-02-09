@@ -52,6 +52,22 @@ impl<T> IoBuffer<T> {
         })
     }
 
+    async fn wait_for_write_to_complete(&mut self) -> HidResult<()> {
+        if self.pending {
+            loop {
+                match self.get_result()? {
+                    Some(size) => {
+                        trace!("Completed write operation (transferred {} bytes)", size);
+                        self.pending = false;
+                        return Ok(());
+                    }
+                    None => self.overlapped.wait_for_completion().await?
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn start_io<F>(&mut self, operation: F) -> HidResult<()>
     where
         F: FnOnce(&Device, &mut [u8], &mut Overlapped) -> windows::core::Result<()>
@@ -154,22 +170,6 @@ impl IoBuffer<Readable> {
 }
 
 impl IoBuffer<Writable> {
-    async fn wait_for_write_to_complete(&mut self) -> HidResult<()> {
-        if self.pending {
-            loop {
-                match self.get_result()? {
-                    Some(size) => {
-                        trace!("Completed write operation (transferred {} bytes)", size);
-                        self.pending = false;
-                        return Ok(());
-                    }
-                    None => self.overlapped.wait_for_completion().await?
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn start_write(&mut self) -> HidResult<()> {
         self.start_io(|device, buffer, overlapped| unsafe {
             trace!("Starting new write operation");
@@ -202,30 +202,45 @@ impl IoBuffer<Writable> {
 }
 
 const IOCTL_HID_GET_FEATURE: u32 = 0x000B0192;
+const IOCTL_HID_SET_FEATURE: u32 = 0x000B0191;
 
 impl IoBuffer<Feature> {
     fn start_feature_read(&mut self, report_id: u8) -> HidResult<()> {
         self.buffer[0] = report_id;
-        self.start_io(|device, buffer, overlapped| {            
-            unsafe {
-                trace!("Starting feature read for report ID {}", report_id);
-                DeviceIoControl(
-                    device.handle(),
-                    IOCTL_HID_GET_FEATURE,
-                    None,
-                    0,
-                    Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
-                    buffer.len() as u32,
-                    None,
-                    Some(overlapped.as_raw_mut()),
-                )
-            }
+        self.start_io(|device, buffer, overlapped| unsafe {
+            trace!("Starting feature read for report ID {}", report_id);
+            DeviceIoControl(
+                device.handle(),
+                IOCTL_HID_GET_FEATURE,
+                None,
+                0,
+                Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
+                buffer.len() as u32,
+                None,
+                Some(overlapped.as_raw_mut())
+            )
+        })
+    }
+
+    fn start_feature_write(&mut self) -> HidResult<()> {
+        self.start_io(|device, buffer, overlapped| unsafe {
+            trace!("Starting feature write operation");
+            DeviceIoControl(
+                device.handle(),
+                IOCTL_HID_SET_FEATURE,
+                Some(buffer.as_ptr() as *const std::ffi::c_void),
+                buffer.len() as u32,
+                None,
+                0,
+                None,
+                Some(overlapped.as_raw_mut())
+            )
         })
     }
 
     pub async fn read_feature_report(&mut self, buf: &mut [u8]) -> HidResult<usize> {
         let report_id = buf[0];
-        
+
         loop {
             match self.pending {
                 false => self.start_feature_read(report_id)?,
@@ -244,6 +259,28 @@ impl IoBuffer<Feature> {
         }
     }
 
+    pub async fn write_feature_report(&mut self, buf: &[u8]) -> HidResult<()> {
+        self.wait_for_write_to_complete()
+            .await
+            .unwrap_or_else(|err| error!("Abandoned feature write failed: {err}"));
+
+        trace!("Filling feature write buffer with data");
+        let mut data_size = buf.len();
+        if data_size > self.buffer.len() {
+            debug!(
+                "Data size ({}) exceeds maximum buffer size ({}), truncating data",
+                data_size,
+                self.buffer.len()
+            );
+            data_size = self.buffer.len();
+        }
+        self.buffer[data_size..].fill(0);
+        self.buffer[..data_size].copy_from_slice(&buf[..data_size]);
+
+        self.start_feature_write()?;
+        self.wait_for_write_to_complete().await?;
+        Ok(())
+    }
 }
 
 struct Overlapped {
