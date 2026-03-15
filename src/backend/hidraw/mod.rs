@@ -168,6 +168,8 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         .ok_or(HidError::message("Can't find hid name"))?
         .to_string();
 
+    let manufacturer = find_manufacturer_string(&path);
+
     let serial_number = read_property(&properties, "HID_UNIQ")
         .filter(|s| !s.is_empty())
         .map(str::to_string);
@@ -175,6 +177,7 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
     let info = DeviceInfo {
         id: DeviceId::DevPath(path.clone()),
         name,
+        manufacturer,
         product_id,
         vendor_id,
         usage_id: 0,
@@ -226,6 +229,23 @@ fn parse_hid_vid_pid(s: &str) -> Option<(u16, u16, u16)> {
     let product = elems.next()?;
 
     Some((devtype, vendor, product))
+}
+
+fn find_manufacturer_string(hidraw_path: &path) -> Option<String> {
+    let mut current = hidraw_path.join("device");
+    loop {
+        let mfr_path = current.join("manufacturer")
+        if let Ok(mfr) = read_to_string(&mfr_path) {
+            let trimmed = mfr.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+        current = current.parent()?.to_path_buf();
+        if current == Path::new("/sys") || current == Path::new("/") {
+            return None;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
