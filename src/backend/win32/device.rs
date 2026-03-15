@@ -2,7 +2,7 @@ use std::ffi::c_void;
 
 use windows::core::{HRESULT, PCWSTR};
 use windows::Win32::Devices::HumanInterfaceDevice::{
-    HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidP_GetCaps,
+    HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetManufacturerString, HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidP_GetCaps,
     HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS, PHIDP_PREPARSED_DATA
 };
 use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE};
@@ -78,6 +78,10 @@ impl Device {
     pub fn name(&self) -> HidResult<String> {
         self.read_string(HidD_GetProductString)
             .ok_or_else(|| windows::core::Error::from_win32().into())
+    }
+
+    pub fn manufacturer(&self) -> Option<String> {
+        self.read_string(HidD_GetManufacturerString)
     }
 }
 

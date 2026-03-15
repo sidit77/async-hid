@@ -4,7 +4,7 @@ use std::mem::transmute;
 use objc2_core_foundation::{kCFAllocatorNull, CFArray, CFDictionary, CFNumber, CFRetained, CFString, CFStringBuiltInEncodings};
 use objc2_io_kit::{
     kIOHIDDeviceUsageKey, kIOHIDDeviceUsagePageKey, kIOHIDDeviceUsagePairsKey, kIOHIDPrimaryUsageKey, kIOHIDPrimaryUsagePageKey, kIOHIDProductIDKey,
-    kIOHIDProductKey, kIOHIDSerialNumberKey, kIOHIDVendorIDKey, kIOReturnSuccess, IOHIDDevice, IORegistryEntryGetRegistryEntryID,
+    kIOHIDProductKey, kIOHIDManufacturerKey, kIOHIDSerialNumberKey, kIOHIDVendorIDKey, kIOReturnSuccess, IOHIDDevice, IORegistryEntryGetRegistryEntryID,
 };
 
 use crate::{ensure, DeviceId, DeviceInfo, HidError, HidResult};
@@ -14,6 +14,10 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
         .property(&property_key(kIOHIDProductKey))
         .and_then(|p| p.downcast_ref::<CFString>().map(|p| p.to_string()))
         .unwrap_or_default();
+
+    let manufacturer = device
+        .property(&property_key(kIOHIDManufacturerKey))
+        .and_then(|p| p.downcast_ref::<CFString>().map(|p| p.to_string()));
 
     let product_id = device
         .property(&property_key(kIOHIDProductIDKey))
@@ -50,6 +54,7 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
     let primary_info = DeviceInfo {
         id: get_device_id(device)?,
         name,
+        manufacturer,
         product_id,
         vendor_id,
         usage_id: primary_usage_id,
