@@ -48,6 +48,8 @@ pub struct DeviceInfo {
     pub id: DeviceId,
     /// The human-readable name
     pub name: String,
+    /// The human-readable manufacturer
+    pub manufacturer: Option<String>,
     /// The HID product id assigned to this device
     pub product_id: u16,
     /// The HID vendor id of the device's manufacturer (i.e Logitech = 0x46D)
