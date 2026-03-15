@@ -89,12 +89,14 @@ impl Backend for Win32Backend {
 fn get_device_information(id: HSTRING) -> HidResult<DeviceInfo> {
     let device = Device::open(PCWSTR(id.as_ptr()), false, false)?;
     let name = device.name()?;
+    let manufacturer = device.manufacturer();
     let attribs = device.attributes()?;
     let caps = device.preparsed_data()?.caps()?;
     let serial_number = device.serial_number();
     Ok(DeviceInfo {
         id: DeviceId::UncPath(id),
         name,
+        manufacturer,
         product_id: attribs.ProductID,
         vendor_id: attribs.VendorID,
         usage_id: caps.Usage,
