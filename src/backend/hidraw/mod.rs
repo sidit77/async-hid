@@ -231,10 +231,10 @@ fn parse_hid_vid_pid(s: &str) -> Option<(u16, u16, u16)> {
     Some((devtype, vendor, product))
 }
 
-fn find_manufacturer_string(hidraw_path: &path) -> Option<String> {
+fn find_manufacturer_string(hidraw_path: &Path) -> Option<String> {
     let mut current = hidraw_path.join("device");
     loop {
-        let mfr_path = current.join("manufacturer")
+        let mfr_path = current.join("manufacturer");
         if let Ok(mfr) = read_to_string(&mfr_path) {
             let trimmed = mfr.trim().to_string();
             if !trimmed.is_empty() {
