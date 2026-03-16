@@ -132,6 +132,7 @@ async fn get_device_information(device: DeviceInformation) -> HidResult<Option<D
         usage_id: device.UsageId()?,
         usage_page: device.UsagePage()?,
         // Not supported
+        manufacturer: None,
         serial_number: None
     }))
 }
