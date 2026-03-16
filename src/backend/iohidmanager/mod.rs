@@ -18,9 +18,7 @@ use futures_lite::stream::{iter, Boxed};
 use futures_lite::{Stream, StreamExt};
 use log::{debug, trace, warn};
 use objc2_core_foundation::{CFDictionary, CFRetained};
-use objc2_io_kit::{
-    kIOMainPortDefault, IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService,
-};
+use objc2_io_kit::{IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
 
 use crate::backend::iohidmanager::device_info::{get_device_id, get_device_info};
 use crate::backend::iohidmanager::read_writer::DeviceReadWriter;
@@ -141,10 +139,11 @@ impl Backend for IoHidManagerBackend {
 fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResult<CFRetained<IOHIDDevice>> {
     let DeviceId::RegistryEntryId(id) = id;
     unsafe {
-        let service = IOServiceGetMatchingService(
-            kIOMainPortDefault,
-            IORegistryEntryIDMatching(*id).map(|d| d.downcast::<CFDictionary>().unwrap()),
-        );
+        // kIOMainPortDefault/kIOMasterPortDefault are both named constants for "0"
+        //
+        // Because kIOMasterPortDefault is deprecated, and kIOMainPortDefault is missing in older SDKs,
+        // just pass 0 instead of named constant
+        let service = IOServiceGetMatchingService(0, IORegistryEntryIDMatching(*id).map(|d| d.downcast::<CFDictionary>().unwrap()));
         ensure!(service != 0, HidError::NotConnected);
         let device = IOHIDDevice::new(None, service).ok_or(HidError::message("Failed to create device"))?;
         if let Some(queue) = dispatch_queue {
