@@ -22,7 +22,7 @@ use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
 use crate::traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
-use crate::{DeviceEvent, DeviceInfo, HidError};
+use crate::{ensure, DeviceEvent, DeviceInfo, HidError};
 
 #[derive(Default)]
 pub struct Win32Backend;
@@ -80,6 +80,11 @@ impl Backend for Win32Backend {
 
         let device = Arc::new(Device::open(id, false, false)?);
         let caps = device.preparsed_data()?.caps()?;
+
+        ensure!(
+            caps.FeatureReportByteLength > 0,
+            HidError::message("Device does not support feature reports")
+        );
 
         let feature_buffer = IoBuffer::<Feature>::new(device, caps.FeatureReportByteLength as usize)?;
         Ok(feature_buffer)
