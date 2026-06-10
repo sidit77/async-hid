@@ -118,25 +118,25 @@ impl Backend for IoHidManagerBackend {
     }
 
     async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
-        let device = get_device(id, None)?;
+        let device = get_device(id)?;
         let device_info = get_device_info(&device)?;
         Ok(device_info)
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
-        let device = get_device(id, Some(&*DISPATCH_QUEUE))?;
-        let rw = Arc::new(DeviceReadWriter::new(device, read, write)?);
+        let device = get_device(id)?;
+        let rw = Arc::new(DeviceReadWriter::new(device, &DISPATCH_QUEUE, read, write)?);
         Ok((read.then_some(rw.clone()), write.then_some(rw)))
     }
 
     async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
-        let device = get_device(id, Some(&*DISPATCH_QUEUE))?;
-        let rw = Arc::new(DeviceReadWriter::new(device, true, true)?);
+        let device = get_device(id)?;
+        let rw = Arc::new(DeviceReadWriter::new(device, &DISPATCH_QUEUE, true, true)?);
         Ok(rw)
     }
 }
 
-fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResult<CFRetained<IOHIDDevice>> {
+fn get_device(id: &DeviceId) -> HidResult<CFRetained<IOHIDDevice>> {
     let DeviceId::RegistryEntryId(id) = id;
     unsafe {
         // kIOMainPortDefault/kIOMasterPortDefault are both named constants for "0"
@@ -152,11 +152,7 @@ fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResul
         // rule). Release on every path — including the creation-failure path
         // below — so repeated opens don't leak a mach port each time.
         IOObjectRelease(service);
-        let device = device.ok_or(HidError::message("Failed to create device"))?;
-        if let Some(queue) = dispatch_queue {
-            device.set_dispatch_queue(queue);
-        }
-        Ok(device)
+        device.ok_or(HidError::message("Failed to create device"))
     }
 }
 
