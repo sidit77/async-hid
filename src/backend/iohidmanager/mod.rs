@@ -18,7 +18,7 @@ use futures_lite::stream::{iter, Boxed};
 use futures_lite::{Stream, StreamExt};
 use log::{debug, trace, warn};
 use objc2_core_foundation::{CFDictionary, CFRetained};
-use objc2_io_kit::{IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
+use objc2_io_kit::{IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IOObjectRelease, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
 
 use crate::backend::iohidmanager::device_info::{get_device_id, get_device_info};
 use crate::backend::iohidmanager::read_writer::DeviceReadWriter;
@@ -145,7 +145,14 @@ fn get_device(id: &DeviceId, dispatch_queue: Option<&DispatchQueue>) -> HidResul
         // just pass 0 instead of named constant
         let service = IOServiceGetMatchingService(0, IORegistryEntryIDMatching(*id).map(|d| d.downcast::<CFDictionary>().unwrap()));
         ensure!(service != 0, HidError::NotConnected);
-        let device = IOHIDDevice::new(None, service).ok_or(HidError::message("Failed to create device"))?;
+        let device = IOHIDDevice::new(None, service);
+        // IOHIDDeviceCreate does not take ownership of the matching service: the
+        // caller still owns the io_service_t returned by
+        // IOServiceGetMatchingService and must release it (IOKit "Get/Create"
+        // rule). Release on every path — including the creation-failure path
+        // below — so repeated opens don't leak a mach port each time.
+        IOObjectRelease(service);
+        let device = device.ok_or(HidError::message("Failed to create device"))?;
         if let Some(queue) = dispatch_queue {
             device.set_dispatch_queue(queue);
         }
