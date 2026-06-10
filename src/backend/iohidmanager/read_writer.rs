@@ -10,6 +10,7 @@ use std::task::Poll;
 use atomic_waker::AtomicWaker;
 use block2::RcBlock;
 use crossbeam_queue::ArrayQueue;
+use dispatch2::DispatchQueue;
 use log::{error, trace};
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
 use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
@@ -40,7 +41,7 @@ unsafe impl Sync for ReaderState {}
 impl DeviceReadWriter {
     pub const DEVICE_OPTIONS: IOOptionBits = 0;
 
-    pub fn new(device: CFRetained<IOHIDDevice>, read: bool, write: bool) -> HidResult<Self> {
+    pub fn new(device: CFRetained<IOHIDDevice>, dispatch_queue: &DispatchQueue, read: bool, write: bool) -> HidResult<Self> {
         if read || write {
             ensure!(
                 device.open(DeviceReadWriter::DEVICE_OPTIONS) == kIOReturnSuccess,
@@ -48,34 +49,50 @@ impl DeviceReadWriter {
             );
         }
 
-        let read_state = match read {
+        let max_input_report_len = match read {
             false => None,
-            true => Some(unsafe {
-                let max_input_report_len = device
+            true => {
+                let len = device
                     .property(&property_key(kIOHIDMaxInputReportSizeKey))
-                    .ok_or(HidError::message("Failed to read input report size"))?
-                    .downcast_ref::<CFNumber>()
-                    .and_then(|n| n.as_i32())
-                    .unwrap() as usize;
-
-                let mut report_buffer = ManuallyDrop::new(vec![0u8; max_input_report_len]);
-
-                let inner = Box::into_raw(Box::new(AsyncReportReaderInner::default()));
-
-                device.register_input_report_callback(
-                    NonNull::new_unchecked(report_buffer.as_mut_ptr()),
-                    report_buffer.len() as CFIndex,
-                    Some(AsyncReportReaderInner::hid_report_callback),
-                    inner.cast(),
-                );
-                device.register_removal_callback(Some(AsyncReportReaderInner::hid_removal_callback), inner.cast());
-
-                ReaderState {
-                    inner: inner.cast(),
-                    report_buffer,
+                    .and_then(|p| p.downcast_ref::<CFNumber>().and_then(|n| n.as_i32()));
+                match len {
+                    Some(len) => Some(len as usize),
+                    None => {
+                        device.close(Self::DEVICE_OPTIONS);
+                        return Err(HidError::message("Failed to read input report size"));
+                    }
                 }
-            }),
+            }
         };
+
+        // Once a device is associated with a dispatch queue it must go through
+        // activate + cancel before it can be released — dropping it early leaks
+        // the dispatch machinery, because the mach channel created by
+        // IOHIDDeviceSetDispatchQueue retains the device through its event
+        // handler block (a retain cycle only IOHIDDeviceCancel breaks). Attach
+        // the queue only after every fallible step above, so error paths drop a
+        // queue-less device, which is safe to release as-is. The cancel side of
+        // the contract lives in Drop.
+        unsafe { device.set_dispatch_queue(dispatch_queue) };
+
+        let read_state = max_input_report_len.map(|max_input_report_len| unsafe {
+            let mut report_buffer = ManuallyDrop::new(vec![0u8; max_input_report_len]);
+
+            let inner = Box::into_raw(Box::new(AsyncReportReaderInner::default()));
+
+            device.register_input_report_callback(
+                NonNull::new_unchecked(report_buffer.as_mut_ptr()),
+                report_buffer.len() as CFIndex,
+                Some(AsyncReportReaderInner::hid_report_callback),
+                inner.cast(),
+            );
+            device.register_removal_callback(Some(AsyncReportReaderInner::hid_removal_callback), inner.cast());
+
+            ReaderState {
+                inner: inner.cast(),
+                report_buffer,
+            }
+        });
 
         let write_state = write.then_some(WriterState);
 
