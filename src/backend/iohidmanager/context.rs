@@ -71,6 +71,12 @@ impl<Result> CallbackContext<Result> {
         Arc::into_raw(callback_arc)
     }
 
+    /// The shared state, for completions signalled from Rust rather than from
+    /// an IOKit callback.
+    pub fn inner(&self) -> Arc<CallbackInner<Result>> {
+        self.inner.clone()
+    }
+
     pub fn inner_from_raw(raw: *const c_void) -> Arc<CallbackInner<Result>> {
         unsafe { Arc::from_raw(raw as *const CallbackInner<Result>) }
     }
