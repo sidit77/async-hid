@@ -66,10 +66,18 @@ impl From<std::io::Error> for HidError {
 impl From<windows::core::Error> for HidError {
     #[track_caller]
     fn from(error: windows::core::Error) -> Self {
-        const DISCONNECTED: windows::core::HRESULT = windows::core::HRESULT::from_win32(windows::Win32::Foundation::ERROR_DEVICE_NOT_CONNECTED.0);
-        match error.code() {
-            DISCONNECTED => HidError::Disconnected,
-            _ => HidError::from_backend(error)
+        use windows::core::HRESULT;
+        use windows::Win32::Foundation::{ERROR_DEVICE_NOT_CONNECTED, ERROR_NO_SUCH_DEVICE};
+
+        let code = error.code();
+        let disconnected = [
+            HRESULT::from_win32(ERROR_DEVICE_NOT_CONNECTED.0),
+            HRESULT::from_win32(ERROR_NO_SUCH_DEVICE.0)
+        ];
+        if disconnected.contains(&code) {
+            HidError::Disconnected
+        } else {
+            HidError::from_backend(error)
         }
     }
 }
@@ -79,6 +87,21 @@ impl From<nix::errno::Errno> for HidError {
     #[track_caller]
     fn from(error: nix::errno::Errno) -> Self {
         HidError::from_backend(nix::Error::from(error))
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use windows::core::HRESULT;
+    use windows::Win32::Foundation::ERROR_NO_SUCH_DEVICE;
+
+    use super::*;
+
+    #[test]
+    fn no_such_device_is_disconnected() {
+        let error = windows::core::Error::from_hresult(HRESULT::from_win32(ERROR_NO_SUCH_DEVICE.0));
+
+        assert!(matches!(HidError::from(error), HidError::Disconnected));
     }
 }
 

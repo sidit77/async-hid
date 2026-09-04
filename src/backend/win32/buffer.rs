@@ -31,6 +31,22 @@ pub struct IoBuffer<T> {
     _marker: PhantomData<T>
 }
 
+/// Apply the state transition reported by `GetOverlappedResult`.
+/// `ERROR_IO_INCOMPLETE` is the only result that leaves the operation pending.
+fn classify_io_result(pending: &mut bool, result: windows::core::Result<()>, bytes_transferred: u32) -> HidResult<Option<usize>> {
+    match result {
+        Ok(()) => {
+            *pending = false;
+            Ok(Some(bytes_transferred as usize))
+        }
+        Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_INCOMPLETE.0) => Ok(None),
+        Err(err) => {
+            *pending = false;
+            Err(err.into())
+        }
+    }
+}
+
 impl<T> Debug for IoBuffer<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IoBuffer")
@@ -58,7 +74,6 @@ impl<T> IoBuffer<T> {
                 match self.get_result()? {
                     Some(size) => {
                         trace!("Completed write operation (transferred {} bytes)", size);
-                        self.pending = false;
                         return Ok(());
                     }
                     None => self.overlapped.wait_for_completion().await?
@@ -105,11 +120,7 @@ impl<T> IoBuffer<T> {
     fn get_result(&mut self) -> HidResult<Option<usize>> {
         let mut bytes_transferred = 0;
         let result = unsafe { GetOverlappedResult(self.device.handle(), self.overlapped.as_raw(), &mut bytes_transferred, false) };
-        match result {
-            Ok(()) => Ok(Some(bytes_transferred as usize)),
-            Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_INCOMPLETE.0) => Ok(None),
-            Err(err) => Err(err.into())
-        }
+        classify_io_result(&mut self.pending, result, bytes_transferred)
     }
 }
 
@@ -159,7 +170,6 @@ impl IoBuffer<Readable> {
                             copy_len = buf.len();
                         }
                         buf[..copy_len].copy_from_slice(&data[..copy_len]);
-                        self.pending = false;
                         return Ok(copy_len);
                     }
                     None => self.overlapped.wait_for_completion().await?
@@ -250,7 +260,6 @@ impl IoBuffer<Feature> {
                         let data = &self.buffer[..size];
                         let copy_len = std::cmp::min(data.len(), buf.len());
                         buf[..copy_len].copy_from_slice(&data[..copy_len]);
-                        self.pending = false;
                         return Ok(copy_len);
                     }
                     None => self.overlapped.wait_for_completion().await?
@@ -320,5 +329,45 @@ impl Drop for Overlapped {
     fn drop(&mut self) {
         let inner = unsafe { Box::from_raw(self.inner) };
         unsafe { CloseHandle(inner.hEvent).unwrap_or_else(|err| warn!("Failed to close handle: {err}")) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use windows::Win32::Foundation::{ERROR_GEN_FAILURE, ERROR_IO_INCOMPLETE, ERROR_NO_SUCH_DEVICE, WIN32_ERROR};
+
+    use super::*;
+
+    fn win32_error(code: WIN32_ERROR) -> windows::core::Error {
+        windows::core::Error::from_hresult(HRESULT::from_win32(code.0))
+    }
+
+    #[test]
+    fn incomplete_result_keeps_operation_pending() {
+        let mut pending = true;
+        let result = classify_io_result(&mut pending, Err(win32_error(ERROR_IO_INCOMPLETE)), 0);
+
+        assert!(matches!(result, Ok(None)));
+        assert!(pending);
+    }
+
+    #[test]
+    fn terminal_errors_clear_operation_pending() {
+        for error in [ERROR_NO_SUCH_DEVICE, ERROR_GEN_FAILURE] {
+            let mut pending = true;
+            let result = classify_io_result(&mut pending, Err(win32_error(error)), 0);
+
+            assert!(result.is_err());
+            assert!(!pending);
+        }
+    }
+
+    #[test]
+    fn successful_result_clears_operation_pending() {
+        let mut pending = true;
+        let result = classify_io_result(&mut pending, Ok(()), 17);
+
+        assert!(matches!(result, Ok(Some(17))));
+        assert!(!pending);
     }
 }
