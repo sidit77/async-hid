@@ -12,6 +12,7 @@
 // `async_api` module at the bottom of this file.
 
 mod descriptor;
+mod devd;
 mod ioctl;
 
 use std::ffi::OsStr;
@@ -20,13 +21,16 @@ use std::io::ErrorKind;
 use std::mem::MaybeUninit;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use futures_lite::stream::{iter, Boxed};
+use futures_lite::stream::{iter, unfold, Boxed};
 use futures_lite::StreamExt;
 use nix::libc::EIO;
 use nix::unistd::{read, write};
+
+use crate::backend::freebsdhid::devd::{parse_line, ParsedEvent};
 
 use crate::backend::freebsdhid::async_api::{read_with, write_with, AsyncFd};
 use crate::backend::freebsdhid::descriptor::HidrawReportDescriptor;
@@ -67,7 +71,43 @@ impl Backend for FreeBsdHidBackend {
     }
 
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
-        Err(HidError::message("watch: not yet implemented on FreeBSD"))
+        const DEVD_SOCKET: &str = "/var/run/devd.pipe";
+
+        let stream = UnixStream::connect(DEVD_SOCKET)
+            .map_err(|e| HidError::message(format!("connect {}: {}", DEVD_SOCKET, e)))?;
+        stream.set_nonblocking(true)?;
+        // Go through the runtime-agnostic `async_api` wrapper so both the
+        // `async-io` and `tokio` features build.
+        let socket: OwnedFd = stream.into();
+
+        // State: (async socket, tail bytes not yet forming a full line, read buffer).
+        let state = (AsyncFd::new(socket)?, String::new(), vec![0u8; 4096]);
+        Ok(unfold(state, |(sock, mut tail, mut buf)| async move {
+            loop {
+                // Drain any lines already buffered in `tail` before touching the socket.
+                if let Some((event, remainder)) = extract_next(&tail) {
+                    tail = remainder;
+                    if let Some(ev) = event {
+                        return Some((ev, (sock, tail, buf)));
+                    }
+                    continue;
+                }
+
+                let n = match read_with(&sock, |fd| read(fd.as_raw_fd(), &mut buf).map_err(std::io::Error::from)).await {
+                    Ok(0) => {
+                        log::debug!("devd closed the socket");
+                        return None;
+                    }
+                    Ok(n) => n,
+                    Err(err) => {
+                        log::warn!("devd read failed: {}", err);
+                        return None;
+                    }
+                };
+                tail.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        })
+        .boxed())
     }
 
     async fn query_info(&self, id: &DeviceId) -> HidResult<Vec<DeviceInfo>> {
@@ -102,6 +142,20 @@ impl Backend for FreeBsdHidBackend {
         let (_, writer) = self.open(id, true, true).await?;
         writer.ok_or(HidError::message("Failed to open device for feature report"))
     }
+}
+
+/// Pop one line off `tail`. Returns Some((event_opt, remainder)) if a full
+/// line was present, None if we need more bytes from the socket. event_opt
+/// is None for lines that don't match a hidraw attach/detach.
+fn extract_next(tail: &str) -> Option<(Option<DeviceEvent>, String)> {
+    let nl = tail.find('\n')?;
+    let (line, rest) = tail.split_at(nl);
+    let remainder = rest[1..].to_string(); // skip the '\n' itself
+    let event = parse_line(line.trim_end_matches('\r')).map(|ev| match ev {
+        ParsedEvent::Attach(p) => DeviceEvent::Connected(DeviceId::DevPath(p)),
+        ParsedEvent::Detach(p) => DeviceEvent::Disconnected(DeviceId::DevPath(p)),
+    });
+    Some((event, remainder))
 }
 
 fn is_hidraw_node(path: &Path) -> bool {
