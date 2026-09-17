@@ -184,6 +184,8 @@ macro_rules! dyn_backend_impl {
 
 // Rustfmt doesn't like my macro so we just declare them all with a bogus cfg attribute
 #[cfg(rustfmt)]
+mod freebsdhid;
+#[cfg(rustfmt)]
 mod hidraw;
 #[cfg(rustfmt)]
 mod iohidmanager;
@@ -211,6 +213,10 @@ dyn_backend_impl! {
     mod iohidmanager {
         IoHidManager(iohidmanager::IoHidManagerBackend)
     }
+    #[cfg(target_os = "freebsd")]
+    mod freebsdhid {
+        FreeBsdHid(freebsdhid::FreeBsdHidBackend)
+    }
 }
 
 impl Default for DynBackend {
@@ -230,6 +236,10 @@ impl Default for DynBackend {
         #[cfg(target_os = "macos")]
         {
             return Self::new(BackendType::IoHidManager);
+        }
+        #[cfg(target_os = "freebsd")]
+        {
+            return Self::new(BackendType::FreeBsdHid);
         }
         panic!("No suitable backend found");
     }

@@ -41,6 +41,7 @@ async fn main() -> HidResult<()> {
 | Windows          | Win32 (`Windows.Win32.Devices`)                |
 | Windows          | WinRT (`Windows.Devices.HumanInterfaceDevice`) |
 | Linux            | hidraw                                         |
+| FreeBSD          | hidraw                                         |
 | MacOs            | IOHIDManager                                   |
 
 Under Windows this crate uses either `win32` (default) or `winrt` feature for backend.
@@ -54,9 +55,20 @@ The amount of asynchronicity that each OS provides varies. The following table g
 | Windows (Win32) | ❌️           | ️️ ❌️    | ✔️                  | ✔️                    |
 | Windows (WinRT) | ✔️           | ✔️     | ✔️                  | ✔️                    |
 | Linux           | ❌            | ❌      | ✔️                  | ✔️                    |
+| FreeBSD         | ❌            | ❌      | ✔️                  | ✔️                    |
 | MacOS           | ❌            | ✔️     | ✔️                  | ✔️                     |
 
-Under Linux this crate uses either `async-io` (default) or `tokio` feature for the async functionality. 
+Under Linux this crate uses either `async-io` (default) or `tokio` feature for the async functionality.
+
+Under FreeBSD this crate likewise uses either `async-io` (default) or `tokio`. Note that FreeBSD's `hidraw(4)`
+implements only the `EVFILT_READ` kqueue filter and rejects `EVFILT_WRITE`, so the tokio backend registers
+descriptors with read interest only and performs writes directly. This is sound because writes to a hidraw node
+never block: `hidraw_write()` calls `hid_write()` synchronously and `hidraw_poll()` already reports `POLLOUT`
+unconditionally.
+
+FreeBSD additionally requires the `hidraw` kernel module (`hidraw_load="YES"` in `loader.conf`),
+`hw.usb.usbhid.enable=1`, and read access to `/dev/hidraw*` (`0600 root:operator` by default, so add a
+`devfs.rules(5)` entry or join the `operator` group).
 
 ## Planned Features
 - Redesign how feature reads and write are integrated exposed.
