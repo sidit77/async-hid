@@ -74,7 +74,7 @@ impl From<windows::core::Error> for HidError {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 impl From<nix::errno::Errno> for HidError {
     #[track_caller]
     fn from(error: nix::errno::Errno) -> Self {

@@ -20,7 +20,7 @@ use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
 /// match(id) {
 ///    #[cfg(target_os = "windows")]
 ///     DeviceId::UncPath(path) => { /* .. */ },
-///     #[cfg(target_os = "linux")]
+///     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 ///     DeviceId::DevPath(path) => { /* .. */ },
 ///     #[cfg(target_os = "macos")]
 ///     DeviceId::RegistryEntryId(id) => { /* .. */ }
@@ -32,7 +32,7 @@ use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
 pub enum DeviceId {
     #[cfg(target_os = "windows")]
     UncPath(windows::core::HSTRING),
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     DevPath(std::path::PathBuf),
     #[cfg(target_os = "macos")]
     RegistryEntryId(u64)
