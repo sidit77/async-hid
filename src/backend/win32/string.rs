@@ -11,12 +11,12 @@ pub struct U16Str([u16]);
 impl U16Str {
     unsafe fn from_slice_unsafe(slice: &[u16]) -> &Self {
         let ptr: *const [u16] = slice;
-        &*(ptr as *const Self)
+        unsafe { &*(ptr as *const Self) }
     }
 
     unsafe fn from_slice_mut_unsafe(slice: &mut [u16]) -> &mut Self {
         let ptr: *mut [u16] = slice;
-        &mut *(ptr as *mut Self)
+        unsafe { &mut *(ptr as *mut Self) }
     }
 
     pub fn from_slice(slice: &[u16]) -> &Self {

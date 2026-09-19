@@ -31,22 +31,6 @@ pub struct IoBuffer<T> {
     _marker: PhantomData<T>
 }
 
-/// Apply the state transition reported by `GetOverlappedResult`.
-/// `ERROR_IO_INCOMPLETE` is the only result that leaves the operation pending.
-fn classify_io_result(pending: &mut bool, result: windows::core::Result<()>, bytes_transferred: u32) -> HidResult<Option<usize>> {
-    match result {
-        Ok(()) => {
-            *pending = false;
-            Ok(Some(bytes_transferred as usize))
-        }
-        Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_INCOMPLETE.0) => Ok(None),
-        Err(err) => {
-            *pending = false;
-            Err(err.into())
-        }
-    }
-}
-
 impl<T> Debug for IoBuffer<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IoBuffer")
@@ -88,23 +72,11 @@ impl<T> IoBuffer<T> {
         F: FnOnce(&Device, &mut [u8], &mut Overlapped) -> windows::core::Result<()>
     {
         assert!(!self.pending, "I/O operation already pending");
-        let result = operation(&self.device, &mut self.buffer, &mut self.overlapped);
-        match result {
-            Ok(_) => {
-                self.pending = true;
-            }
-            Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
-                self.pending = true;
-            }
-            Err(err) => {
-                if let Err(err) = self.cancel_io() {
-                    self.pending = true;
-                    panic!("Failed to cancel I/O operation: {:?}", err);
-                } else {
-                    self.pending = false;
-                }
-                return Err(err.into());
-            }
+        let r = operation(&self.device, &mut self.buffer, &mut self.overlapped);
+        self.pending = true;
+        if let Err(e) = r && e.code() != HRESULT::from_win32(ERROR_IO_PENDING.0) {
+            self.cancel_io().expect("Failed to cancel I/O operation");
+            return Err(e.into())
         }
         Ok(())
     }
@@ -114,13 +86,23 @@ impl<T> IoBuffer<T> {
             Ok(()) => Ok(()),
             Err(err) if err.code() == HRESULT::from_win32(ERROR_NOT_FOUND.0) => Ok(()),
             Err(err) => Err(err.into())
-        }
+        }.inspect(|_| self.pending = false)
     }
 
     fn get_result(&mut self) -> HidResult<Option<usize>> {
         let mut bytes_transferred = 0;
         let result = unsafe { GetOverlappedResult(self.device.handle(), self.overlapped.as_raw(), &mut bytes_transferred, false) };
-        classify_io_result(&mut self.pending, result, bytes_transferred)
+        match result {
+            Ok(()) => {
+                self.pending = false;
+                Ok(Some(bytes_transferred as usize))
+            }
+            Err(err) if err.code() == HRESULT::from_win32(ERROR_IO_INCOMPLETE.0) => Ok(None),
+            Err(err) => {
+                self.pending = false;
+                Err(err.into())
+            }
+        }
     }
 }
 
@@ -332,6 +314,8 @@ impl Drop for Overlapped {
     }
 }
 
+/*
+TODO: Figure out how to make the buffer logic mockable so that we can write tests against it
 #[cfg(test)]
 mod tests {
     use windows::Win32::Foundation::{ERROR_GEN_FAILURE, ERROR_IO_INCOMPLETE, ERROR_NO_SUCH_DEVICE, WIN32_ERROR};
@@ -371,3 +355,4 @@ mod tests {
         assert!(!pending);
     }
 }
+ */

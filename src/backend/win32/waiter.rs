@@ -39,7 +39,7 @@ impl HandleWaiter {
 
     unsafe extern "system" fn callback_func(inner: *mut c_void, _: bool) {
         trace!("Received wait callback");
-        let inner = &*(inner as *const WaitableHandleFutureInner);
+        let inner = unsafe { &*(inner as *const WaitableHandleFutureInner) };
         inner.complete.store(true, Ordering::SeqCst);
         inner.waker.wake();
     }
