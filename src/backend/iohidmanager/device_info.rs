@@ -63,9 +63,12 @@ pub fn get_device_info(device: &IOHIDDevice) -> HidResult<Vec<DeviceInfo>> {
     };
 
     let mut result = vec![primary_info.clone()];
+    // Bound to a name rather than left as a temporary in the argument: the
+    // iterator below borrows from it and is consumed by `extend`, which under
+    // edition 2024 outlives the temporary.
+    let usage_pairs = device.property(&property_key(kIOHIDDeviceUsagePairsKey));
     result.extend(unsafe {
-        device
-            .property(&property_key(kIOHIDDeviceUsagePairsKey))
+        usage_pairs
             .iter()
             .flat_map(|p| {
                 p.downcast_ref::<CFArray>()
