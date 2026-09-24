@@ -280,10 +280,10 @@ impl AsyncReportReaderInner {
         context: *mut c_void, _result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, report: NonNull<u8>,
         report_length: CFIndex,
     ) {
-        let this: &Self = &*(context as *mut Self);
+        let this: &Self = unsafe { &*(context as *mut Self) };
         let mut buffer = this.empty_buffers.pop().unwrap_or_default();
         buffer.resize(report_length as usize, 0);
-        buffer.copy_from_slice(from_raw_parts(report.as_ptr(), report_length as usize));
+        buffer.copy_from_slice(unsafe { from_raw_parts(report.as_ptr(), report_length as usize) });
         if let Some(old) = this.full_buffers.force_push(buffer) {
             this.recycle_buffer(old);
         }
@@ -291,7 +291,7 @@ impl AsyncReportReaderInner {
     }
 
     unsafe extern "C-unwind" fn hid_removal_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void) {
-        let this: &Self = &*(context as *mut Self);
+        let this: &Self = unsafe { &*(context as *mut Self) };
         this.removed.store(true, Ordering::Relaxed);
         this.waker.wake();
     }

@@ -214,8 +214,8 @@ impl ManagerCallbackContext {
     }
 
     unsafe extern "C-unwind" fn added_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void, device: NonNull<IOHIDDevice>) {
-        let this: &Self = &*(context as *const Self);
-        match get_device_id(device.as_ref()) {
+        let this: &Self = unsafe { &*(context as *const Self) };
+        match get_device_id(unsafe { device.as_ref() }) {
             Ok(id) => {
                 if let Some(prev_id) = this.devices.lock().unwrap().insert(device, id.clone()) {
                     warn!("Device {:p} connected with {:?} already has a stored device id {:?}", device, id, prev_id);
@@ -227,7 +227,7 @@ impl ManagerCallbackContext {
     }
 
     unsafe extern "C-unwind" fn removed_callback(context: *mut c_void, _result: IOReturn, _sender: *mut c_void, device: NonNull<IOHIDDevice>) {
-        let this: &Self = &*(context as *const Self);
+        let this: &Self = unsafe { &*(context as *const Self) };
         let device_id = this.devices.lock().unwrap().remove(&device);
         match device_id {
             Some(id) => this.notify_watchers(DeviceEvent::Disconnected(id)),
