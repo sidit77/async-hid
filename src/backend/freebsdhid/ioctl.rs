@@ -28,7 +28,10 @@ impl Default for HidrawReportDescriptor {
 /// we compose the request number by hand and call libc::ioctl.
 pub unsafe fn hidiocg_rdesc(fd: RawFd, desc: &mut HidrawReportDescriptor) -> Result<(), Errno> {
     let req = request_code_none!(b'U', 31) as libc::c_ulong;
-    let rc = libc::ioctl(fd, req, desc as *mut HidrawReportDescriptor);
+    // SAFETY: `fd` is a descriptor the caller keeps open for the call, and the
+    // kernel writes at most `desc.size` bytes into `desc.value`, which the
+    // caller owns for the duration.
+    let rc = unsafe { libc::ioctl(fd, req, desc as *mut HidrawReportDescriptor) };
     if rc < 0 {
         Err(Errno::last())
     } else {
