@@ -58,13 +58,18 @@ unsafe impl Send for SendDevice {}
 /// Shared between the dispatched job and the waiting future, and nothing else.
 /// IOKit never sees it: the native call only ever touches storage the job owns
 /// outright, so this carries no lifetime obligation towards native code. A
-/// dropped future simply releases its reference; the job keeps the allocation
-/// alive and its result is discarded with it.
+/// dropped future releases its reference and sets `cancelled`; the job keeps the
+/// allocation alive and its result is discarded with it.
 #[derive(Default)]
 struct ReportCompletion {
     result: Mutex<Option<HidResult<Vec<u8>>>>,
     done: AtomicBool,
     waker: AtomicWaker,
+
+    /// Set when the future is dropped, so a job that has not started yet can
+    /// return without asking the device for a report nobody wants. It is read
+    /// only by the job, before the native call, and never by native code.
+    cancelled: AtomicBool,
 }
 
 impl ReportCompletion {
@@ -81,6 +86,15 @@ impl ReportCompletion {
 
 /// Waits for one dispatched report transaction.
 struct ReportCompletionFuture(Arc<ReportCompletion>);
+
+impl Drop for ReportCompletionFuture {
+    fn drop(&mut self) {
+        // Release to pair with the acquiring load in the job. The flag is the
+        // only thing that crosses, so the pairing is about keeping one ordering
+        // discipline in this type rather than about publishing data.
+        self.0.cancelled.store(true, Ordering::Release);
+    }
+}
 
 impl Future for ReportCompletionFuture {
     type Output = HidResult<Vec<u8>>;
@@ -99,7 +113,15 @@ impl Future for ReportCompletionFuture {
 
 /// Runs `job` on `queue` and hands its result to the returned future.
 ///
-/// The seam the tests use: they substitute a job that sleeps, errors or returns
+/// A job whose future is already gone is not run at all: the report is dropped
+/// before it reaches the device, not after. That bounds what cancelling costs,
+/// because a cancelled transaction no longer occupies the queue for the length
+/// of a native call. It cannot do anything for a job that has already started -
+/// `IOHIDDeviceGetReport` is synchronous and there is nothing to cancel it with -
+/// and it does not need to: that case is safe because the job owns everything
+/// the call touches.
+///
+/// The seam the tests use: they substitute a job that blocks, errors or returns
 /// a short report, which exercises the ownership and cancellation behaviour
 /// without IOKit.
 fn dispatch_report_job<F>(queue: &DispatchQueue, job: F) -> ReportCompletionFuture
@@ -108,7 +130,12 @@ where
 {
     let completion = Arc::new(ReportCompletion::default());
     let job_completion = completion.clone();
-    queue.exec_async(move || job_completion.complete(job()));
+    queue.exec_async(move || {
+        if job_completion.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        job_completion.complete(job())
+    });
     ReportCompletionFuture(completion)
 }
 
@@ -584,14 +611,20 @@ mod tests {
         assert_eq!(count.load(Ordering::Acquire), 1);
     }
 
-    /// The future is dropped while the job is still running. The job
-    /// owns everything it touches, so it may finish at its own pace.
+    /// The future is dropped while the job is already running. An
+    /// operation that has begun cannot be called off, and does not need to be:
+    /// the job owns everything it touches, so it may finish at its own pace and
+    /// its result is discarded with the shared state.
+    ///
+    /// The start is handshaked rather than assumed, which is what makes the test
+    /// about a running job rather than about a queued one.
     #[test]
-    fn a_job_outliving_its_future_finishes_and_releases_its_storage() {
+    fn a_job_that_already_started_finishes_and_discards_its_result() {
         let queue = report_queue();
         let count = Arc::new(AtomicUsize::new(0));
         let (signal, released) = channel();
         let (release, wait_for_release) = channel::<()>();
+        let (report_start, started) = channel::<()>();
         let sentinel = DropSentinel {
             count: count.clone(),
             signal,
@@ -599,12 +632,14 @@ mod tests {
 
         let mut job = dispatch_report_job(&queue, move || {
             let _storage = sentinel;
+            let _ = report_start.send(());
             wait_for_release.recv().expect("release signal");
             Ok(vec![0x11; 4])
         });
 
         let (polled, waker) = poll_once(&mut job);
         assert!(polled.is_pending());
+        wait_for("the job to start", &started);
 
         // Keep the shared state to observe, as the job does, then let the
         // waiting side go away entirely.
@@ -620,6 +655,45 @@ mod tests {
         assert!(completion.result.lock().expect("result").is_some(), "the result nobody wants stays with the shared state");
 
         wait_until("the job to drop its reference", || Arc::strong_count(&completion) == 1);
+    }
+
+    /// A future dropped before its job can start. The queue is serial, so a
+    /// blocker occupying it makes the ordering a fact rather than a race: the
+    /// drop provably happens first, and the work must then not run at all.
+    #[test]
+    fn a_future_dropped_before_its_job_starts_skips_the_work() {
+        let queue = report_queue();
+        let (release, wait_for_release) = channel::<()>();
+        let (report_blocked, blocked) = channel::<()>();
+        queue.exec_async(move || {
+            let _ = report_blocked.send(());
+            wait_for_release.recv().expect("release signal");
+        });
+        wait_for("the queue to be occupied", &blocked);
+
+        let ran = Arc::new(AtomicUsize::new(0));
+        let job_ran = ran.clone();
+        let job = dispatch_report_job(&queue, move || {
+            job_ran.fetch_add(1, Ordering::Release);
+            Ok(vec![0x99; 4])
+        });
+        let completion = job.0.clone();
+        drop(job);
+
+        // Behind the job on the same serial queue, so its own turn proves the
+        // job has been through.
+        let (report_passed, passed) = channel::<()>();
+        queue.exec_async(move || {
+            let _ = report_passed.send(());
+        });
+
+        release.send(()).expect("blocker still waiting");
+        wait_for("the queue to work through both jobs", &passed);
+
+        assert_eq!(ran.load(Ordering::Acquire), 0, "the work of a cancelled job must not run");
+        assert!(!completion.done.load(Ordering::Acquire), "a skipped job completes nothing");
+        assert!(completion.result.lock().expect("result").is_none());
+        wait_until("the skipped job to drop its reference", || Arc::strong_count(&completion) == 1);
     }
 
     /// The job completes and only then is the future
