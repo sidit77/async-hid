@@ -7,22 +7,23 @@ This crate generally offers a simpler and more streamlined api while also suppor
 
 ## Example
 
-```rust
-use async_hid::{AccessMode, DeviceInfo, HidResult};
-use simple_logger::SimpleLogger;
+```rust,no_run
+use async_hid::{AsyncHidRead, AsyncHidWrite, Device, HidBackend, HidResult};
 use futures_lite::StreamExt;
+use simple_logger::SimpleLogger;
 
 #[pollster::main]
 async fn main() -> HidResult<()> {
     SimpleLogger::new().init().unwrap();
 
-    let device = DeviceInfo::enumerate()
+    let mut device = HidBackend::default()
+        .enumerate()
         .await?
         //Steelseries Arctis Nova 7X headset
-        .find(|info: &DeviceInfo | info.matches(0xFFC0, 0x1, 0x1038, 0x2206))
+        .find(|info: &Device| info.matches(0xFFC0, 0x1, 0x1038, 0x2206))
         .await
         .expect("Could not find device")
-        .open(AccessMode::ReadWrite)
+        .open()
         .await?;
 
     device.write_output_report(&[0x0, 0xb0]).await?;
