@@ -301,6 +301,8 @@ impl DeviceReadWriter {
         let mut data = data_to_send.to_vec();
         let device = SendDevice(self.device.clone());
 
+        // Do not use dispatch_report_job here: once dispatched, a write must
+        // reach the device even if the future that started it is dropped.
         self.report_queue.exec_async(move || {
             // Force whole-struct capture (edition 2021+ disjoint capture).
             let device = device;
