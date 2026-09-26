@@ -461,3 +461,324 @@ impl AsyncReportReaderInner {
         this.waker.wake();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::task::{Wake, Waker};
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    /// Long enough that a loaded machine does not fail the test, short enough
+    /// that a genuine deadlock does not hang the suite.
+    const PATIENCE: Duration = Duration::from_secs(5);
+
+    fn report_queue() -> DispatchRetained<DispatchQueue> {
+        DispatchQueue::new("async-hid-report-tests", DispatchQueueAttr::SERIAL)
+    }
+
+    fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + PATIENCE;
+        while !ready() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+        }
+    }
+
+    fn wait_for(what: &str, signal: &Receiver<()>) {
+        signal.recv_timeout(PATIENCE).unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
+    /// Stands in for the storage a real job owns, and says when it is released.
+    struct DropSentinel {
+        count: Arc<AtomicUsize>,
+        signal: Sender<()>,
+    }
+
+    impl Drop for DropSentinel {
+        fn drop(&mut self) {
+            self.count.fetch_add(1, Ordering::Release);
+            let _ = self.signal.send(());
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingWaker(AtomicUsize);
+
+    impl CountingWaker {
+        fn wakes(&self) -> usize {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+
+    impl Wake for CountingWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// Drives a job to completion the way an executor would, with a deadline so
+    /// that a wake that never arrives fails the test rather than hanging it.
+    fn settle(mut job: ReportCompletionFuture) -> HidResult<Vec<u8>> {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            if let (Poll::Ready(result), _) = poll_once(&mut job) {
+                return result;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for the job to complete");
+            std::thread::yield_now();
+        }
+    }
+
+    /// Polls once, the way an executor would, and keeps the waker to inspect.
+    fn poll_once(future: &mut ReportCompletionFuture) -> (Poll<HidResult<Vec<u8>>>, Arc<CountingWaker>) {
+        let waker = Arc::new(CountingWaker::default());
+        let handed_out = Waker::from(waker.clone());
+        let mut cx = Context::from_waker(&handed_out);
+        (Pin::new(future).poll(&mut cx), waker)
+    }
+
+    /// A completed report reaches the caller, and only as far as it goes.
+    #[test]
+    fn a_completed_report_is_copied_behind_the_report_id() {
+        let queue = report_queue();
+        let job = dispatch_report_job(&queue, || Ok(vec![0xAA, 0xBB, 0xCC]));
+
+        let mut buf = [0xFFu8; 8];
+        let report_id = 0x0;
+        buf[0] = report_id;
+        let length = copy_report_out(&mut buf, report_id, settle(job)).expect("report");
+
+        assert_eq!(length, 3);
+        assert_eq!(&buf[1..4], &[0xAA, 0xBB, 0xCC]);
+        assert_eq!(buf[0], 0x0, "the report id byte is the caller's");
+        assert_eq!(&buf[4..], &[0xFF; 4], "bytes behind the report stay untouched");
+    }
+
+    /// An error reaches the caller, and the buffer keeps its contents.
+    #[test]
+    fn a_failed_report_leaves_the_caller_buffer_alone() {
+        let queue = report_queue();
+        let count = Arc::new(AtomicUsize::new(0));
+        let (signal, released) = channel();
+        let sentinel = DropSentinel {
+            count: count.clone(),
+            signal,
+        };
+        let job = dispatch_report_job(&queue, move || {
+            let _storage = sentinel;
+            Err(HidError::Disconnected)
+        });
+
+        let mut buf = [0xFFu8; 8];
+        let report_id = 0x0;
+        buf[0] = report_id;
+        let result = copy_report_out(&mut buf, report_id, settle(job));
+
+        assert!(matches!(result, Err(HidError::Disconnected)));
+        assert_eq!(buf[0], 0x0);
+        assert_eq!(&buf[1..], &[0xFF; 7], "a failed report writes nothing");
+        wait_for("the failed job to release its storage", &released);
+        assert_eq!(count.load(Ordering::Acquire), 1);
+    }
+
+    /// The future is dropped while the job is still running. The job
+    /// owns everything it touches, so it may finish at its own pace.
+    #[test]
+    fn a_job_outliving_its_future_finishes_and_releases_its_storage() {
+        let queue = report_queue();
+        let count = Arc::new(AtomicUsize::new(0));
+        let (signal, released) = channel();
+        let (release, wait_for_release) = channel::<()>();
+        let sentinel = DropSentinel {
+            count: count.clone(),
+            signal,
+        };
+
+        let mut job = dispatch_report_job(&queue, move || {
+            let _storage = sentinel;
+            wait_for_release.recv().expect("release signal");
+            Ok(vec![0x11; 4])
+        });
+
+        let (polled, waker) = poll_once(&mut job);
+        assert!(polled.is_pending());
+
+        // Keep the shared state to observe, as the job does, then let the
+        // waiting side go away entirely.
+        let completion = job.0.clone();
+        drop(job);
+
+        release.send(()).expect("job still running");
+        wait_for("the abandoned job to release its storage", &released);
+        wait_until("the abandoned job to complete", || completion.done.load(Ordering::Acquire));
+
+        assert_eq!(count.load(Ordering::Acquire), 1);
+        assert_eq!(waker.wakes(), 1, "the completion woke the waker it was handed, which is still alive");
+        assert!(completion.result.lock().expect("result").is_some(), "the result nobody wants stays with the shared state");
+
+        wait_until("the job to drop its reference", || Arc::strong_count(&completion) == 1);
+    }
+
+    /// The job completes and only then is the future
+    /// dropped, so a finished result is discarded rather than delivered.
+    #[test]
+    fn a_completed_job_survives_a_future_dropped_afterwards() {
+        let queue = report_queue();
+        let mut job = dispatch_report_job(&queue, || Ok(vec![0x22; 4]));
+
+        let (polled, _waker) = poll_once(&mut job);
+        let completion = job.0.clone();
+        wait_until("the job to complete", || completion.done.load(Ordering::Acquire));
+        drop(polled);
+        drop(job);
+
+        wait_until("the job to drop its reference", || Arc::strong_count(&completion) == 1);
+        assert!(completion.result.lock().expect("result").is_some());
+    }
+
+    /// Drop and completion run against each other with
+    /// no coordination at all, many times over.
+    #[test]
+    fn dropping_a_future_never_races_the_job_that_completes_it() {
+        const ROUNDS: usize = 500;
+
+        let queue = report_queue();
+        let count = Arc::new(AtomicUsize::new(0));
+        let (signal, released) = channel();
+
+        for round in 0..ROUNDS {
+            let sentinel = DropSentinel {
+                count: count.clone(),
+                signal: signal.clone(),
+            };
+            let mut job = dispatch_report_job(&queue, move || {
+                let _storage = sentinel;
+                Ok(vec![0x33; 4])
+            });
+            // Half the rounds register a waker first, half never poll at all.
+            if round % 2 == 0 {
+                let _ = poll_once(&mut job);
+            }
+            drop(job);
+        }
+
+        for _ in 0..ROUNDS {
+            wait_for("every job to release its storage", &released);
+        }
+        assert_eq!(count.load(Ordering::Acquire), ROUNDS);
+    }
+
+    /// A device that answers with fewer bytes than fit.
+    #[test]
+    fn a_short_report_reports_its_own_length() {
+        let mut buf = [0xFFu8; 8];
+        let report_id = 0x0;
+        buf[0] = report_id;
+
+        let length = copy_report_out(&mut buf, report_id, Ok(vec![0x44, 0x55])).expect("report");
+
+        assert_eq!(length, 2);
+        assert_eq!(&buf[1..3], &[0x44, 0x55]);
+        assert_eq!(&buf[3..], &[0xFF; 5]);
+    }
+
+    /// The caller's buffer bounds the request. A zero report id costs the
+    /// first byte, any other id is part of the report, which is the same split
+    /// the write path applies. The request never exceeds that capacity, and a
+    /// device claiming more is rejected in `report_from_native`; the copy is
+    /// bounded once more so that no length can reach `copy_from_slice` unchecked.
+    #[test]
+    fn the_caller_buffer_bounds_the_report() {
+        assert_eq!(report_capacity(8, 0x0), 7);
+        assert_eq!(report_capacity(8, 0x21), 8);
+        assert_eq!(report_capacity(1, 0x0), 0);
+        assert_eq!(report_capacity(0, 0x0), 0);
+
+        let mut buf = [0xFFu8; 4];
+        let report_id = 0x0;
+        buf[0] = report_id;
+        let length = copy_report_out(&mut buf, report_id, Ok(vec![0x66; 16])).expect("report");
+
+        assert_eq!(length, 3, "no more than the buffer holds");
+        assert_eq!(&buf[1..], &[0x66; 3]);
+    }
+
+    /// The length is the device's word. An answer it cannot back is an
+    /// error, not something to bend into a slice length.
+    #[test]
+    fn an_impossible_native_length_is_an_error() {
+        let sixteen = || native_buffer(16);
+
+        for impossible in [-1, CFIndex::MIN, 17, 4096] {
+            let answer = report_from_native(kIOReturnSuccess, sixteen(), impossible, 16);
+            assert!(matches!(answer, Err(HidError::Message(_))), "{impossible} was accepted");
+        }
+
+        let exact = report_from_native(kIOReturnSuccess, sixteen(), 16, 16).expect("report");
+        assert_eq!(exact.len(), 16);
+        let short = report_from_native(kIOReturnSuccess, sixteen(), 4, 16).expect("report");
+        assert_eq!(short, vec![0u8; 4]);
+        let nothing = report_from_native(kIOReturnSuccess, sixteen(), 0, 16).expect("report");
+        assert!(nothing.is_empty(), "a device may legitimately answer with no bytes");
+    }
+
+    /// A request for zero bytes, which a one byte caller buffer with
+    /// report id zero asks for. IOKit gets a pointer into an allocation rather
+    /// than the dangling one an empty `Vec` yields, and the capacity of zero
+    /// stays the bound for the answer.
+    #[test]
+    fn a_zero_capacity_request_still_hands_iokit_an_allocation() {
+        assert_eq!(native_buffer(0).len(), 1, "never a dangling pointer");
+        assert_eq!(native_buffer(7).len(), 7, "and no padding for anything else");
+
+        let nothing = report_from_native(kIOReturnSuccess, native_buffer(0), 0, 0).expect("report");
+        assert!(nothing.is_empty());
+
+        // The spare byte is not room the caller asked for, so a device claiming
+        // to have written it is an error rather than a byte with nowhere to go.
+        let answer = report_from_native(kIOReturnSuccess, native_buffer(0), 1, 0);
+        assert!(matches!(answer, Err(HidError::Message(_))));
+    }
+
+    /// A job that finishes before the future is polled at all. The
+    /// wake then happens with no waker registered, so the first poll has to
+    /// observe `done` by itself or the wakeup is lost.
+    #[test]
+    fn a_job_completing_before_the_first_poll_is_not_a_lost_wakeup() {
+        let queue = report_queue();
+        let mut job = dispatch_report_job(&queue, || Ok(vec![0x88; 4]));
+
+        let completion = job.0.clone();
+        wait_until("the job to complete before the first poll", || completion.done.load(Ordering::Acquire));
+
+        let (polled, waker) = poll_once(&mut job);
+        match polled {
+            Poll::Ready(result) => assert_eq!(result.expect("report"), vec![0x88; 4]),
+            Poll::Pending => panic!("a job that is already done must be ready on the first poll"),
+        }
+        assert_eq!(waker.wakes(), 0, "nothing was woken; the poll read the flag");
+    }
+
+    /// The code a removed device answers with, measured on a YKUSH3 pulled
+    /// during a read loop, has to keep becoming a disconnect.
+    #[test]
+    fn the_code_a_removed_device_answers_with_is_a_disconnect() {
+        const REMOVED: IOReturn = 0xE00002C2u32 as IOReturn;
+        const NOT_RESPONDING: IOReturn = 0xE00002EDu32 as IOReturn;
+        const NOT_READY: IOReturn = 0xE00002D8u32 as IOReturn;
+
+        assert_eq!(REMOVED, kIOReturnBadArgument as IOReturn);
+        assert!(matches!(report_from_native(REMOVED, native_buffer(4), 0, 4), Err(HidError::Disconnected)));
+
+        // The two or three calls that catch the removal itself answer
+        // differently, and keep the mapping they have today. Both codes were
+        // measured on the board being pulled mid read.
+        for code in [NOT_RESPONDING, NOT_READY] {
+            let answer = report_from_native(code, native_buffer(4), 0, 4);
+            assert!(matches!(answer, Err(HidError::Message(_))), "{code:#X} changed its mapping");
+        }
+    }
+}
