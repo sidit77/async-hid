@@ -49,3 +49,34 @@ lint-macos:
     cargo clippy --all-features --target x86_64-apple-darwin
 
 lint: lint-windows lint-linux lint-freebsd lint-macos
+
+# The tests this host can run. Every backend is type checked by `check` and
+# `lint` for all four targets; only the host's own backend can actually be
+# built, linked and executed, so that is what these do. The freebsdhid parser
+# tests are unreachable everywhere: they are gated on the target and there is
+# no FreeBSD runner.
+
+[linux]
+test-host:
+    cargo test --lib --no-default-features --features async-io
+    cargo test --lib --no-default-features --features tokio
+    cargo test --doc --no-default-features --features async-io
+
+[macos]
+test-host:
+    cargo test --lib
+    cargo test --doc
+
+[windows]
+test-host:
+    cargo test --lib --no-default-features --features win32
+    cargo test --lib --no-default-features --features winrt
+    cargo test --doc --no-default-features --features win32
+
+# Everything CI runs, as far as one host can. CI additionally runs `test-host`
+# on Linux, macOS and Windows; here it runs on this host only. Needs the cross
+# targets:
+#
+#   rustup target add x86_64-apple-darwin x86_64-pc-windows-msvc \
+#                     x86_64-unknown-linux-gnu x86_64-unknown-freebsd
+ci: check lint test-host
