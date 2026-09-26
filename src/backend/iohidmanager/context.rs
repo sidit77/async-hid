@@ -1,5 +1,4 @@
 use std::{
-    ffi::c_void,
     future::Future,
     pin::Pin,
     sync::{
@@ -10,7 +9,6 @@ use std::{
 };
 
 use atomic_waker::AtomicWaker;
-use log::trace;
 
 use crate::{HidError, HidResult};
 use objc2_io_kit::{kIOReturnBadArgument, kIOReturnSuccess};
@@ -33,10 +31,6 @@ pub struct CallbackInner<Result> {
 
     /// Atomic flag to indicate the callback is done
     pub done: AtomicBool,
-
-    /// Atomic flag to indicate the future was dropped.
-    /// The callback function can check this and return
-    pub cancelled: AtomicBool,
 }
 
 impl<Result> Default for CallbackInner<Result> {
@@ -45,7 +39,6 @@ impl<Result> Default for CallbackInner<Result> {
             result: Default::default(),
             waker: Default::default(),
             done: Default::default(),
-            cancelled: Default::default(),
             ret: Default::default(),
         }
     }
@@ -63,34 +56,10 @@ impl<Result> CallbackContext<Result> {
         }
     }
 
-    /// Get a raw pointer to the inner context.
-    /// This should be provided to the callback function
-    #[inline(always)]
-    pub fn as_raw(&self) -> *const CallbackInner<Result> {
-        let callback_arc = self.inner.clone();
-        Arc::into_raw(callback_arc)
-    }
-
     /// The shared state, for completions signalled from Rust rather than from
     /// an IOKit callback.
     pub fn inner(&self) -> Arc<CallbackInner<Result>> {
         self.inner.clone()
-    }
-
-    pub fn inner_from_raw(raw: *const c_void) -> Arc<CallbackInner<Result>> {
-        unsafe { Arc::from_raw(raw as *const CallbackInner<Result>) }
-    }
-}
-
-impl<Result> Drop for CallbackContext<Result> {
-    fn drop(&mut self) {
-        // Set the cancelled flag to indicate to the callback the future
-        // has gone out of scope and can release the Arc and return.
-        self.inner
-            .cancelled
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-
-        trace!("CallbackContext dropped");
     }
 }
 
