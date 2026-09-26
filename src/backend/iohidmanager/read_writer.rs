@@ -10,7 +10,7 @@ use std::task::Poll;
 use atomic_waker::AtomicWaker;
 use block2::RcBlock;
 use crossbeam_queue::ArrayQueue;
-use dispatch2::DispatchQueue;
+use dispatch2::{DispatchQoS, DispatchQueue, DispatchQueueAttr, DispatchRetained, GlobalQueueIdentifier};
 use log::{error, trace};
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
 use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
@@ -33,7 +33,25 @@ struct ReaderState {
     report_buffer: ManuallyDrop<Vec<u8>>,
 }
 
-struct WriterState;
+struct WriterState {
+    /// Writes for one device are serialized and ordered, and the queue the
+    /// device delivers its input reports on is never blocked by one.
+    queue: DispatchRetained<DispatchQueue>,
+}
+
+/// A device handle that may be moved to another thread.
+///
+/// # Safety
+///
+/// Two things make this sound. CoreFoundation reference counts are atomic, so
+/// retaining and releasing an `IOHIDDevice` from a dispatch worker is defined,
+/// including the case where the block holds the last reference because the
+/// `DeviceReadWriter` was dropped while the write was still queued. And
+/// `IOHIDDeviceSetReport`, the only thing called through this handle, is
+/// synchronous and carries no run loop or queue affinity, unlike the
+/// callback-driven calls, which belong to the queue the device was attached to.
+struct SendDevice(CFRetained<IOHIDDevice>);
+unsafe impl Send for SendDevice {}
 
 unsafe impl Send for ReaderState {}
 unsafe impl Sync for ReaderState {}
@@ -94,7 +112,14 @@ impl DeviceReadWriter {
             }
         });
 
-        let write_state = write.then_some(WriterState);
+        let write_state = write.then(|| {
+            // Targeted at a user initiated global queue rather than given a
+            // QoS floor afterwards: the floor may only be set while the object
+            // is still inactive, and a queue from `new` is already active.
+            let target = DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(DispatchQoS::UserInitiated));
+            let queue = DispatchQueue::new_with_target("async-hid-write", DispatchQueueAttr::SERIAL, Some(&target));
+            WriterState { queue }
+        });
 
         device.activate();
 
@@ -107,33 +132,49 @@ impl DeviceReadWriter {
 
     /// Common function to write reports from the specified [`IOHIDReportType`]
     async fn write_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a [u8]) -> HidResult<()> {
-        #[allow(non_upper_case_globals)]
-        const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
-
-        let _ = self.write_state.as_ref().expect("Device is not writable");
+        let write_state = self.write_state.as_ref().expect("Device is not writable");
         let report_id = buf[0];
         let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
 
+        // The synchronous SetReport runs on the device's own serial queue and is
+        // awaited, so the signature stays asynchronous and no executor thread is
+        // blocked. IOHIDDeviceSetReportWithCallback is deliberately not used: on
+        // macOS it stops input report delivery after a few hundred calls.
+        //
+        // There is no timeout. SetReport offers none, and a crate that does not
+        // pick a runtime has no timer of its own to race it against.
         let context = CallbackContext::<()>::new();
+        let inner = context.inner();
 
-        #[allow(non_upper_case_globals)]
-        match unsafe {
-            self.device.set_report_with_callback(
-                report_type,
-                report_id as _,
-                NonNull::new_unchecked(data_to_send.as_ptr() as _),
-                data_to_send.len() as _,
-                250.0,
-                Some(AsyncWriterCallback::write_callback),
-                context.as_raw() as *mut _,
-            )
-        } {
-            kIOReturnSuccess => Ok(()),
-            kIOReturnBadArgument => Err(HidError::Disconnected),
-            other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
-        }?;
+        // The block outlives this frame as far as the type system knows, so it
+        // gets owned copies. IOKit only reads the report, and owning it is what
+        // makes a future dropped mid write cost a wasted write and nothing else.
+        let data = data_to_send.to_vec();
+        let device = SendDevice(self.device.clone());
 
-        // Nothing is returned, so just ignore the inner Option
+        write_state.queue.exec_async(move || {
+            // Force whole-struct capture (edition 2021+ disjoint capture).
+            let device = device;
+            let ret = unsafe {
+                device.0.set_report(
+                    report_type,
+                    report_id as _,
+                    NonNull::new_unchecked(data.as_ptr() as *mut u8),
+                    data.len() as _,
+                )
+            };
+            inner.ret.store(ret, Ordering::Relaxed);
+            // Release, so the return code above is visible to the acquiring
+            // load in poll. Without it a completed write can be seen before the
+            // code it completed with, and a failure reads as success.
+            inner.done.store(true, Ordering::Release);
+            // The cancelled flag is not consulted. It exists so a C callback
+            // knows to drop the Arc it was handed raw; this block holds an
+            // ordinary one, so signalling a future that is already gone
+            // writes to live memory and wakes nobody.
+            inner.waker.wake();
+        });
+
         context.await.map(|_| ())
     }
 
@@ -323,37 +364,12 @@ impl AsyncReaderCallback {
         // Set the return result
         context.ret.store(result, Ordering::Relaxed);
 
-        // Mark the callback done
-        context.done.store(true, Ordering::Relaxed);
+        // Mark the callback done. Release for the same reason as in the write
+        // path: it publishes the return code stored just above.
+        context.done.store(true, Ordering::Release);
 
         context.waker.wake();
 
         trace!("Read callback {:?}", _report_type);
-    }
-}
-
-struct AsyncWriterCallback;
-impl AsyncWriterCallback {
-    unsafe extern "C-unwind" fn write_callback(
-        context: *mut c_void, result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, _report: NonNull<u8>,
-        _report_length: CFIndex,
-    ) {
-        let context = CallbackContext::<()>::inner_from_raw(context);
-
-        // Check if the future has been cancelled and return
-        if context.cancelled.load(Ordering::Relaxed) {
-            trace!("Write callback cancelled {:?}", _report_type);
-            return;
-        }
-
-        // Set the return result
-        context.ret.store(result, Ordering::Relaxed);
-
-        // Mark the callback done
-        context.done.store(true, Ordering::Relaxed);
-
-        context.waker.wake();
-
-        trace!("Write callback {:?}", _report_type);
     }
 }
