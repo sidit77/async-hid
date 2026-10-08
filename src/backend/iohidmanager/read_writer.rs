@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::ptr::NonNull;
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError};
 use std::task::{Context, Poll};
 
 use atomic_waker::AtomicWaker;
@@ -24,6 +24,9 @@ pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
     read_state: Option<ReaderState>,
     writable: bool,
+    /// A feature or output report read whose caller went away before the
+    /// result arrived. The next read of the same report takes it over.
+    pending_read: PendingSlot,
     /// Explicit report transactions run here, one at a time per handle. It is
     /// not the queue the device delivers its input reports on, so a report in
     /// flight never delays a read.
@@ -58,18 +61,13 @@ unsafe impl Send for SendDevice {}
 /// Shared between the dispatched job and the waiting future, and nothing else.
 /// IOKit never sees it: the native call only ever touches storage the job owns
 /// outright, so this carries no lifetime obligation towards native code. A
-/// dropped future releases its reference and sets `cancelled`; the job keeps the
-/// allocation alive and its result is discarded with it.
+/// dropped future releases its reference; the job keeps the allocation alive
+/// and its result is discarded with it.
 #[derive(Default)]
 struct ReportCompletion {
     result: Mutex<Option<HidResult<Vec<u8>>>>,
     done: AtomicBool,
     waker: AtomicWaker,
-
-    /// Set when the future is dropped, so a job that has not started yet can
-    /// return without asking the device for a report nobody wants. It is read
-    /// only by the job, before the native call, and never by native code.
-    cancelled: AtomicBool,
 }
 
 impl ReportCompletion {
@@ -86,15 +84,6 @@ impl ReportCompletion {
 
 /// Waits for one dispatched report transaction.
 struct ReportCompletionFuture(Arc<ReportCompletion>);
-
-impl Drop for ReportCompletionFuture {
-    fn drop(&mut self) {
-        // Release to pair with the acquiring load in the job. The flag is the
-        // only thing that crosses, so the pairing is about keeping one ordering
-        // discipline in this type rather than about publishing data.
-        self.0.cancelled.store(true, Ordering::Release);
-    }
-}
 
 impl Future for ReportCompletionFuture {
     type Output = HidResult<Vec<u8>>;
@@ -113,13 +102,9 @@ impl Future for ReportCompletionFuture {
 
 /// Runs `job` on `queue` and hands its result to the returned future.
 ///
-/// A job whose future is already gone is not run at all: the report is dropped
-/// before it reaches the device, not after. That bounds what cancelling costs,
-/// because a cancelled transaction no longer occupies the queue for the length
-/// of a native call. It cannot do anything for a job that has already started -
-/// `IOHIDDeviceGetReport` is synchronous and there is nothing to cancel it with -
-/// and it does not need to: that case is safe because the job owns everything
-/// the call touches.
+/// The job runs even if the future is gone by then. `IOHIDDeviceGetReport` is
+/// synchronous and there is nothing to cancel it with, and it does not need to
+/// be cancelled: the job owns everything the call touches.
 ///
 /// The seam the tests use: they substitute a job that blocks, errors or returns
 /// a short report, which exercises the ownership and cancellation behaviour
@@ -130,13 +115,101 @@ where
 {
     let completion = Arc::new(ReportCompletion::default());
     let job_completion = completion.clone();
-    queue.exec_async(move || {
-        if job_completion.cancelled.load(Ordering::Acquire) {
-            return;
-        }
-        job_completion.complete(job())
-    });
+    queue.exec_async(move || job_completion.complete(job()));
     ReportCompletionFuture(completion)
+}
+
+/// What a feature or output report read asks the device for. A read that was
+/// started and then abandoned is handed only to a later read that asks for
+/// exactly the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReportRequest {
+    report_type: IOHIDReportType,
+    report_id: u8,
+    capacity: usize,
+}
+
+/// A report read that was started and whose result nobody has taken yet.
+struct PendingRead {
+    request: ReportRequest,
+    completion: ReportCompletionFuture,
+}
+
+type PendingSlot = Mutex<Option<PendingRead>>;
+
+fn lock_slot(slot: &PendingSlot) -> MutexGuard<'_, Option<PendingRead>> {
+    // Nothing panics while the lock is held, and every state of the slot is
+    // valid, so a poisoned lock carries no broken invariant.
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Drops the pending read, if there is one. Its job still runs, but its
+/// result can no longer reach a later read.
+fn forget_pending_read(slot: &PendingSlot) {
+    lock_slot(slot).take();
+}
+
+/// A pending read taken out of the slot by the read that waits for it.
+///
+/// Taking it out keeps one waiter per completion, which the single waker in
+/// `ReportCompletion` relies on. A waiting read that is dropped before the
+/// result arrives puts the pending read back, so the next read picks it up
+/// instead of asking the device again. That is what keeps a read raced against
+/// a timeout from losing the report it already asked for.
+struct ClaimedRead<'a> {
+    slot: &'a PendingSlot,
+    pending: Option<PendingRead>,
+}
+
+impl<'a> ClaimedRead<'a> {
+    fn claim(slot: &'a PendingSlot) -> Self {
+        let pending = lock_slot(slot).take();
+        Self { slot, pending }
+    }
+
+    async fn finish(&mut self) -> HidResult<Vec<u8>> {
+        let pending = self.pending.as_mut().expect("no read claimed");
+        let report = (&mut pending.completion).await;
+        self.pending = None;
+        report
+    }
+}
+
+impl Drop for ClaimedRead<'_> {
+    fn drop(&mut self) {
+        let Some(pending) = self.pending.take() else { return };
+        let mut slot = lock_slot(self.slot);
+        // A clone of the handle may have left a read of its own in the
+        // meantime. Only one can stay, and dropping this one costs its result
+        // and nothing else, because its job owns everything the call touches.
+        if slot.is_none() {
+            *slot = Some(pending);
+        }
+    }
+}
+
+/// Reads one report, taking over a read of the same request that an earlier,
+/// dropped call already started, or dispatching `job` if there is none.
+///
+/// A pending read for a different request is dropped. Its job is ahead on the
+/// serial queue either way, so waiting for it here would not make the new
+/// read any faster.
+async fn read_resumable<F>(slot: &PendingSlot, queue: &DispatchQueue, request: ReportRequest, job: F) -> HidResult<Vec<u8>>
+where
+    F: Send + FnOnce() -> HidResult<Vec<u8>> + 'static,
+{
+    let mut claimed = ClaimedRead::claim(slot);
+    if claimed.pending.as_ref().is_some_and(|pending| pending.request != request) {
+        trace!("Dropping a pending report read for a different request");
+        claimed.pending = None;
+    }
+    if claimed.pending.is_none() {
+        claimed.pending = Some(PendingRead {
+            request,
+            completion: dispatch_report_job(queue, job),
+        });
+    }
+    claimed.finish().await
 }
 
 /// Room for report data in a caller buffer whose first byte carries the report
@@ -275,6 +348,7 @@ impl DeviceReadWriter {
             device,
             read_state,
             writable: write,
+            pending_read: Mutex::new(None),
             report_queue,
         })
     }
@@ -292,6 +366,9 @@ impl DeviceReadWriter {
         //
         // There is no timeout. SetReport offers none, and a crate that does not
         // pick a runtime has no timer of its own to race it against.
+        // A report read before this write must not answer a read after it.
+        forget_pending_read(&self.pending_read);
+
         let context = CallbackContext::<()>::new();
         let inner = context.inner();
 
@@ -332,9 +409,9 @@ impl DeviceReadWriter {
     ///
     /// The native call runs synchronously inside a dispatched job that owns
     /// both the report buffer and the length cell, so nothing IOKit can reach
-    /// depends on this future staying alive. Dropping the future detaches the
-    /// waiter; it does not cancel the native operation, and the job's result is
-    /// then discarded.
+    /// depends on this future staying alive. Dropping the future does not
+    /// cancel the native operation: the read stays pending, and the next read
+    /// of the same report returns its result rather than asking again.
     async fn read_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a mut [u8]) -> HidResult<usize> {
         // Should never reach here for report types other that feature or output
         match report_type {
@@ -345,9 +422,14 @@ impl DeviceReadWriter {
         let _ = self.read_state.as_ref().expect("Device is not readable");
         let report_id = buf[0];
         let capacity = report_capacity(buf.len(), report_id);
+        let request = ReportRequest {
+            report_type,
+            report_id,
+            capacity,
+        };
 
         let device = SendDevice(self.device.clone());
-        let report = dispatch_report_job(&self.report_queue, move || {
+        let report = read_resumable(&self.pending_read, &self.report_queue, request, move || {
             // Force whole-struct capture (edition 2021+ disjoint capture).
             let device = device;
             let mut owned = native_buffer(capacity);
@@ -497,6 +579,8 @@ mod tests {
     use std::sync::mpsc::{channel, Receiver, Sender};
     use std::task::{Wake, Waker};
     use std::time::{Duration, Instant};
+
+    use futures_lite::future::{block_on, poll_once as poll_future_once};
 
     use super::*;
 
@@ -659,45 +743,6 @@ mod tests {
         wait_until("the job to drop its reference", || Arc::strong_count(&completion) == 1);
     }
 
-    /// A future dropped before its job can start. The queue is serial, so a
-    /// blocker occupying it makes the ordering a fact rather than a race: the
-    /// drop provably happens first, and the work must then not run at all.
-    #[test]
-    fn a_future_dropped_before_its_job_starts_skips_the_work() {
-        let queue = report_queue();
-        let (release, wait_for_release) = channel::<()>();
-        let (report_blocked, blocked) = channel::<()>();
-        queue.exec_async(move || {
-            let _ = report_blocked.send(());
-            wait_for_release.recv().expect("release signal");
-        });
-        wait_for("the queue to be occupied", &blocked);
-
-        let ran = Arc::new(AtomicUsize::new(0));
-        let job_ran = ran.clone();
-        let job = dispatch_report_job(&queue, move || {
-            job_ran.fetch_add(1, Ordering::Release);
-            Ok(vec![0x99; 4])
-        });
-        let completion = job.0.clone();
-        drop(job);
-
-        // Behind the job on the same serial queue, so its own turn proves the
-        // job has been through.
-        let (report_passed, passed) = channel::<()>();
-        queue.exec_async(move || {
-            let _ = report_passed.send(());
-        });
-
-        release.send(()).expect("blocker still waiting");
-        wait_for("the queue to work through both jobs", &passed);
-
-        assert_eq!(ran.load(Ordering::Acquire), 0, "the work of a cancelled job must not run");
-        assert!(!completion.done.load(Ordering::Acquire), "a skipped job completes nothing");
-        assert!(completion.result.lock().expect("result").is_none());
-        wait_until("the skipped job to drop its reference", || Arc::strong_count(&completion) == 1);
-    }
-
     /// The job completes and only then is the future
     /// dropped, so a finished result is discarded rather than delivered.
     #[test]
@@ -745,6 +790,132 @@ mod tests {
             wait_for("every job to release its storage", &released);
         }
         assert_eq!(count.load(Ordering::Acquire), ROUNDS);
+    }
+
+    fn request(report_id: u8) -> ReportRequest {
+        ReportRequest {
+            report_type: IOHIDReportType::Feature,
+            report_id,
+            capacity: 8,
+        }
+    }
+
+    /// Polls a read once, the way a timeout that expires right after the first
+    /// poll would, and then drops it.
+    fn abandon_after_first_poll(
+        slot: &PendingSlot, queue: &DispatchQueue, request: ReportRequest, job: impl Send + FnOnce() -> HidResult<Vec<u8>> + 'static
+    ) {
+        let mut read = Box::pin(read_resumable(slot, queue, request, job));
+        assert!(block_on(poll_future_once(&mut read)).is_none(), "the read must still be waiting");
+    }
+
+    /// Keeps the serial queue busy until the returned sender fires, so that a
+    /// read dispatched meanwhile is provably still waiting when it is polled.
+    fn occupy(queue: &DispatchQueue) -> Sender<()> {
+        let (release, wait_for_release) = channel::<()>();
+        let (report_blocked, blocked) = channel::<()>();
+        queue.exec_async(move || {
+            let _ = report_blocked.send(());
+            let _ = wait_for_release.recv();
+        });
+        wait_for("the queue to be occupied", &blocked);
+        release
+    }
+
+    fn job_that_must_not_run(ran: &Arc<AtomicUsize>) -> impl Send + FnOnce() -> HidResult<Vec<u8>> + 'static {
+        let ran = ran.clone();
+        move || {
+            ran.fetch_add(1, Ordering::Release);
+            Ok(vec![0xEE; 4])
+        }
+    }
+
+    /// The timeout pattern: a read is dropped while the device is still
+    /// answering, more than once, and the read after that gets the report the
+    /// first one asked for without asking the device again.
+    #[test]
+    fn a_read_dropped_by_a_timeout_hands_its_report_to_the_next_read() {
+        let queue = report_queue();
+        let slot = PendingSlot::default();
+        let (release, wait_for_release) = channel::<()>();
+        let (report_start, started) = channel::<()>();
+
+        abandon_after_first_poll(&slot, &queue, request(0x05), move || {
+            let _ = report_start.send(());
+            wait_for_release.recv().expect("release signal");
+            Ok(vec![0x11; 4])
+        });
+        wait_for("the first read to reach the device", &started);
+        assert!(lock_slot(&slot).is_some(), "the dropped read stays pending");
+
+        let ran = Arc::new(AtomicUsize::new(0));
+        abandon_after_first_poll(&slot, &queue, request(0x05), job_that_must_not_run(&ran));
+        assert!(lock_slot(&slot).is_some(), "a second timeout keeps it pending too");
+
+        release.send(()).expect("job still running");
+        let report = block_on(read_resumable(&slot, &queue, request(0x05), job_that_must_not_run(&ran)));
+
+        assert_eq!(report.expect("report"), vec![0x11; 4]);
+        assert_eq!(ran.load(Ordering::Acquire), 0, "the device was asked once");
+        assert!(lock_slot(&slot).is_none(), "a delivered report is no longer pending");
+    }
+
+    /// A pending read answers only the request it was started for.
+    #[test]
+    fn a_pending_read_for_another_report_is_not_handed_over() {
+        let queue = report_queue();
+        let slot = PendingSlot::default();
+
+        let blocker = occupy(&queue);
+        abandon_after_first_poll(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+        drop(blocker);
+        let report = block_on(read_resumable(&slot, &queue, request(0x06), || Ok(vec![0x22; 4])));
+        assert_eq!(report.expect("report"), vec![0x22; 4]);
+
+        let mut other_size = request(0x06);
+        other_size.capacity = 4;
+        let blocker = occupy(&queue);
+        abandon_after_first_poll(&slot, &queue, request(0x06), || Ok(vec![0x33; 8]));
+        drop(blocker);
+        let report = block_on(read_resumable(&slot, &queue, other_size, || Ok(vec![0x44; 4])));
+        assert_eq!(report.expect("report"), vec![0x44; 4]);
+        assert!(lock_slot(&slot).is_none());
+    }
+
+    /// A write in between makes a pending read stale, because the report it
+    /// asked for may predate what the write changed.
+    #[test]
+    fn a_forgotten_read_is_not_handed_over() {
+        let queue = report_queue();
+        let slot = PendingSlot::default();
+
+        let blocker = occupy(&queue);
+        abandon_after_first_poll(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+        forget_pending_read(&slot);
+        drop(blocker);
+        let report = block_on(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x55; 4])));
+
+        assert_eq!(report.expect("report"), vec![0x55; 4]);
+    }
+
+    /// Only one pending read is kept. When a second read is abandoned while
+    /// another is already back in the slot, the one in the slot stays.
+    #[test]
+    fn an_occupied_slot_keeps_its_read() {
+        let queue = report_queue();
+        let slot = PendingSlot::default();
+
+        let blocker = occupy(&queue);
+        let mut first = Box::pin(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x11; 4])));
+        assert!(block_on(poll_future_once(&mut first)).is_none());
+        // `first` still holds its claim, so the slot is empty and a second read
+        // dispatches its own job.
+        abandon_after_first_poll(&slot, &queue, request(0x05), || Ok(vec![0x22; 4]));
+        drop(first);
+        drop(blocker);
+
+        let report = block_on(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x33; 4])));
+        assert_eq!(report.expect("report"), vec![0x22; 4]);
     }
 
     /// A device that answers with fewer bytes than fit.
