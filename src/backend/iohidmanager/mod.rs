@@ -1,4 +1,3 @@
-mod context;
 mod device_info;
 mod read_writer;
 

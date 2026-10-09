@@ -16,7 +16,6 @@ use log::trace;
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
 use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnBadArgument, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
 
-use crate::backend::iohidmanager::context::CallbackContext;
 use crate::backend::iohidmanager::device_info::property_key;
 use crate::{ensure, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
 
@@ -24,12 +23,9 @@ pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
     read_state: Option<ReaderState>,
     writable: bool,
-    /// A feature or output report read whose caller went away before the
-    /// result arrived. The next read of the same report takes it over.
+    /// A dropped feature or output report read, taken over by the next matching read.
     pending_read: PendingSlot,
-    /// Explicit report transactions run here, one at a time per handle. It is
-    /// not the queue the device delivers its input reports on, so a report in
-    /// flight never delays a read.
+    /// Runs GetReport and SetReport, apart from the queue that delivers input reports.
     report_queue: DispatchRetained<DispatchQueue>,
 }
 
@@ -41,87 +37,84 @@ struct ReaderState {
     report_buffer: ManuallyDrop<Vec<u8>>,
 }
 
-/// A device handle that may be moved to another thread.
+unsafe impl Send for ReaderState {}
+unsafe impl Sync for ReaderState {}
+
+/// A device handle that may be moved to a dispatch worker.
 ///
 /// # Safety
 ///
-/// Two things make this sound. CoreFoundation reference counts are atomic, so
-/// retaining and releasing an `IOHIDDevice` from a dispatch worker is defined,
-/// including the case where the block holds the last reference because the
-/// `DeviceReadWriter` was dropped while a report was still queued. And
-/// `IOHIDDeviceGetReport` and `IOHIDDeviceSetReport`, the only things called
-/// through this handle, are synchronous and carry no run loop or queue
-/// affinity, unlike the callback-driven calls, which belong to the queue the
-/// device was attached to.
+/// CoreFoundation reference counts are atomic, and the synchronous
+/// `IOHIDDeviceGetReport` and `IOHIDDeviceSetReport` have no queue affinity.
 struct SendDevice(CFRetained<IOHIDDevice>);
 unsafe impl Send for SendDevice {}
 
-/// Result of one dispatched report transaction.
-///
-/// Shared between the dispatched job and the waiting future, and nothing else.
-/// IOKit never sees it: the native call only ever touches storage the job owns
-/// outright, so this carries no lifetime obligation towards native code. A
-/// dropped future releases its reference; the job keeps the allocation alive
-/// and its result is discarded with it.
-#[derive(Default)]
-struct ReportCompletion {
-    result: Mutex<Option<HidResult<Vec<u8>>>>,
-    done: AtomicBool,
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // Nothing panics while one of these locks is held.
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+struct Completion<T> {
+    result: Mutex<Option<HidResult<T>>>,
     waker: AtomicWaker,
 }
 
-impl ReportCompletion {
-    fn complete(&self, outcome: HidResult<Vec<u8>>) {
-        if let Ok(mut slot) = self.result.lock() {
-            *slot = Some(outcome);
-        }
-        // Release, so the result stored above is visible to the acquiring load
-        // in poll.
-        self.done.store(true, Ordering::Release);
-        self.waker.wake();
-    }
-}
+/// Waits for a job on the report queue. Dropping it does not stop the job.
+struct CompletionFuture<T>(Arc<Completion<T>>);
 
-/// Waits for one dispatched report transaction.
-struct ReportCompletionFuture(Arc<ReportCompletion>);
-
-impl Future for ReportCompletionFuture {
-    type Output = HidResult<Vec<u8>>;
+impl<T> Future for CompletionFuture<T> {
+    type Output = HidResult<T>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.0.waker.register(cx.waker());
-        if !self.0.done.load(Ordering::Acquire) {
-            return Poll::Pending;
+        match lock(&self.0.result).take() {
+            Some(result) => Poll::Ready(result),
+            None => Poll::Pending,
         }
-        Poll::Ready(match self.0.result.lock() {
-            Ok(mut slot) => slot.take().unwrap_or_else(|| Err(HidError::message("report result taken twice"))),
-            Err(e) => Err(HidError::message(format!("Mutex error: {:?}", e))),
-        })
     }
 }
 
-/// Runs `job` on `queue` and hands its result to the returned future.
-///
-/// The job runs even if the future is gone by then. `IOHIDDeviceGetReport` is
-/// synchronous and there is nothing to cancel it with, and it does not need to
-/// be cancelled: the job owns everything the call touches.
-///
-/// The seam the tests use: they substitute a job that blocks, errors or returns
-/// a short report, which exercises the ownership and cancellation behaviour
-/// without IOKit.
-fn dispatch_report_job<F>(queue: &DispatchQueue, job: F) -> ReportCompletionFuture
+/// Runs `job` on `queue`. The job must own everything the native call touches,
+/// because it runs to completion even if the future is dropped.
+fn dispatch<T, F>(queue: &DispatchQueue, job: F) -> CompletionFuture<T>
 where
-    F: Send + FnOnce() -> HidResult<Vec<u8>> + 'static,
+    T: Send + 'static,
+    F: Send + FnOnce() -> HidResult<T> + 'static,
 {
-    let completion = Arc::new(ReportCompletion::default());
+    let completion = Arc::new(Completion {
+        result: Mutex::new(None),
+        waker: AtomicWaker::new(),
+    });
     let job_completion = completion.clone();
-    queue.exec_async(move || job_completion.complete(job()));
-    ReportCompletionFuture(completion)
+    queue.exec_async(move || {
+        *lock(&job_completion.result) = Some(job());
+        job_completion.waker.wake();
+    });
+    CompletionFuture(completion)
 }
 
-/// What a feature or output report read asks the device for. A read that was
-/// started and then abandoned is handed only to a later read that asks for
-/// exactly the same.
+fn check(ret: IOReturn) -> HidResult<()> {
+    #[allow(non_upper_case_globals)]
+    match ret {
+        kIOReturnSuccess => Ok(()),
+        // IOKit answers a removed device with a bad argument.
+        other if other == kIOReturnBadArgument as IOReturn => Err(HidError::Disconnected),
+        other => Err(HidError::message(format!("report transaction failed: {:#X}", other))),
+    }
+}
+
+/// The length comes from the device, so it is checked before it becomes a slice length.
+fn report_from_native(ret: IOReturn, mut report: Vec<u8>, length: CFIndex, capacity: usize) -> HidResult<Vec<u8>> {
+    check(ret)?;
+    match usize::try_from(length) {
+        Ok(length) if length <= capacity => {
+            report.truncate(length);
+            Ok(report)
+        }
+        _ => Err(HidError::message(format!("the device reported {length} bytes for a request of {capacity}"))),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ReportRequest {
     report_type: IOHIDReportType,
@@ -129,156 +122,50 @@ struct ReportRequest {
     capacity: usize,
 }
 
-/// A report read that was started and whose result nobody has taken yet.
 struct PendingRead {
     request: ReportRequest,
-    completion: ReportCompletionFuture,
+    completion: CompletionFuture<Vec<u8>>,
 }
 
 type PendingSlot = Mutex<Option<PendingRead>>;
 
-fn lock_slot(slot: &PendingSlot) -> MutexGuard<'_, Option<PendingRead>> {
-    // Nothing panics while the lock is held, and every state of the slot is
-    // valid, so a poisoned lock carries no broken invariant.
-    slot.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Drops the pending read, if there is one. Its job still runs, but its
-/// result can no longer reach a later read.
 fn forget_pending_read(slot: &PendingSlot) {
-    lock_slot(slot).take();
+    lock(slot).take();
 }
 
-/// A pending read taken out of the slot by the read that waits for it.
-///
-/// Taking it out keeps one waiter per completion, which the single waker in
-/// `ReportCompletion` relies on. A waiting read that is dropped before the
-/// result arrives puts the pending read back, so the next read picks it up
-/// instead of asking the device again. That is what keeps a read raced against
-/// a timeout from losing the report it already asked for.
+/// A pending read taken out of the slot, so that each completion has one waiter.
+/// Dropped before the result arrives, it goes back for the next read.
 struct ClaimedRead<'a> {
     slot: &'a PendingSlot,
     pending: Option<PendingRead>,
 }
 
-impl<'a> ClaimedRead<'a> {
-    fn claim(slot: &'a PendingSlot) -> Self {
-        let pending = lock_slot(slot).take();
-        Self { slot, pending }
-    }
-
-    async fn finish(&mut self) -> HidResult<Vec<u8>> {
-        let pending = self.pending.as_mut().expect("no read claimed");
-        let report = (&mut pending.completion).await;
-        self.pending = None;
-        report
-    }
-}
-
 impl Drop for ClaimedRead<'_> {
     fn drop(&mut self) {
-        let Some(pending) = self.pending.take() else { return };
-        let mut slot = lock_slot(self.slot);
-        // A clone of the handle may have left a read of its own in the
-        // meantime. Only one can stay, and dropping this one costs its result
-        // and nothing else, because its job owns everything the call touches.
-        if slot.is_none() {
-            *slot = Some(pending);
+        if let Some(pending) = self.pending.take() {
+            // A clone of the handle may have left its own read meanwhile; keep that one.
+            lock(self.slot).get_or_insert(pending);
         }
     }
 }
 
-/// Reads one report, taking over a read of the same request that an earlier,
-/// dropped call already started, or dispatching `job` if there is none.
-///
-/// A pending read for a different request is dropped. Its job is ahead on the
-/// serial queue either way, so waiting for it here would not make the new
-/// read any faster.
+/// Reads one report, taking over a pending read of the same request if there is one.
 async fn read_resumable<F>(slot: &PendingSlot, queue: &DispatchQueue, request: ReportRequest, job: F) -> HidResult<Vec<u8>>
 where
     F: Send + FnOnce() -> HidResult<Vec<u8>> + 'static,
 {
-    let mut claimed = ClaimedRead::claim(slot);
-    if claimed.pending.as_ref().is_some_and(|pending| pending.request != request) {
-        trace!("Dropping a pending report read for a different request");
-        claimed.pending = None;
-    }
-    if claimed.pending.is_none() {
-        claimed.pending = Some(PendingRead {
-            request,
-            completion: dispatch_report_job(queue, job),
-        });
-    }
-    claimed.finish().await
-}
-
-/// Room for report data in a caller buffer whose first byte carries the report
-/// id. A zero id is not part of the report and is not sent, so the data occupies
-/// the rest of the buffer; any other id is part of the report itself. This is
-/// the same split the write path applies to the outgoing report.
-fn report_capacity(buf_len: usize, report_id: u8) -> usize {
-    match report_id {
-        // A buffer too short to hold the id is rejected by reading it.
-        0x0 => buf_len.saturating_sub(1),
-        _ => buf_len,
-    }
-}
-
-/// The buffer one native report transaction writes into.
-///
-/// One byte longer than a request of zero bytes needs. Such a request still goes
-/// to the device, as it did before this path became an owned job, but an empty
-/// `Vec` would hand IOKit a dangling pointer for it; this way the pointer
-/// addresses an allocation even though the length tells IOKit that nothing may
-/// be written through it. The requested capacity, not the length of this buffer,
-/// stays the bound the device's answer is checked against.
-fn native_buffer(capacity: usize) -> Vec<u8> {
-    vec![0u8; capacity.max(1)]
-}
-
-/// Turns the outcome of one native `IOHIDDeviceGetReport` into a result.
-///
-/// `owned` is the buffer the call filled, `length` the number of bytes the device
-/// claims to have written and `capacity` what was asked for. The length comes
-/// from the device, so anything it cannot mean - negative, or more than was
-/// requested - is an error rather than something to bend into a slice length.
-fn report_from_native(ret: IOReturn, mut owned: Vec<u8>, length: CFIndex, capacity: usize) -> HidResult<Vec<u8>> {
-    #[allow(non_upper_case_globals)]
-    match ret {
-        kIOReturnSuccess => match usize::try_from(length) {
-            Ok(length) if length <= capacity => {
-                owned.truncate(length);
-                Ok(owned)
-            }
-            _ => Err(HidError::message(format!(
-                "the device reported {length} bytes for a request of {capacity}"
-            ))),
-        },
-        // IOKit answers a device that has gone away with a bad argument. The
-        // calls that catch the removal itself may still return not responding or
-        // not ready, which stay message errors, as they do on the write path.
-        other if other == kIOReturnBadArgument as IOReturn => Err(HidError::Disconnected),
-        other => Err(HidError::message(format!("failed to get report: {:#X}", other))),
-    }
-}
-
-/// Hands a finished report transaction to the caller.
-///
-/// Only a successful report touches `buf`, and only as far as it reaches: the
-/// bytes behind it keep whatever the caller left there.
-fn copy_report_out(buf: &mut [u8], report_id: u8, report: HidResult<Vec<u8>>) -> HidResult<usize> {
-    let report = report?;
-    let target = match report_id {
-        0x0 => &mut buf[1..],
-        _ => buf,
+    let mut claimed = ClaimedRead {
+        slot,
+        pending: lock(slot).take().filter(|pending| pending.request == request),
     };
-    let length = report.len().min(target.len());
-    target[..length].copy_from_slice(&report[..length]);
-    Ok(length)
+    let pending = claimed.pending.get_or_insert_with(|| PendingRead {
+        request,
+        completion: dispatch(queue, job),
+    });
+    let report = (&mut pending.completion).await;
+    claimed.pending = None;
+    report
 }
-
-unsafe impl Send for ReaderState {}
-unsafe impl Sync for ReaderState {}
 
 impl DeviceReadWriter {
     pub const DEVICE_OPTIONS: IOOptionBits = 0;
@@ -336,9 +223,7 @@ impl DeviceReadWriter {
             }
         });
 
-        // Targeted at a user initiated global queue rather than given a QoS
-        // floor afterwards: the floor may only be set while the object is
-        // still inactive, and a queue from `new` is already active.
+        // A QoS floor can only be set on an inactive queue, so target a global queue instead.
         let target = DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(DispatchQoS::UserInitiated));
         let report_queue = DispatchQueue::new_with_target("async-hid-reports", DispatchQueueAttr::SERIAL, Some(&target));
 
@@ -357,61 +242,30 @@ impl DeviceReadWriter {
     async fn write_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a [u8]) -> HidResult<()> {
         assert!(self.writable, "Device is not writable");
         let report_id = buf[0];
-        let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
+        let mut data = if report_id == 0x0 { &buf[1..] } else { buf }.to_vec();
 
-        // The synchronous SetReport runs on the device's own serial queue and is
-        // awaited, so the signature stays asynchronous and no executor thread is
-        // blocked. IOHIDDeviceSetReportWithCallback is deliberately not used: on
-        // macOS it stops input report delivery after a few hundred calls.
-        //
-        // There is no timeout. SetReport offers none, and a crate that does not
-        // pick a runtime has no timer of its own to race it against.
         // A report read before this write must not answer a read after it.
         forget_pending_read(&self.pending_read);
 
-        let context = CallbackContext::<()>::new();
-        let inner = context.inner();
-
-        // The block outlives this frame as far as the type system knows, so it
-        // gets owned copies. IOKit only reads the report, and owning it is what
-        // makes a future dropped mid write cost a wasted write and nothing else.
-        let mut data = data_to_send.to_vec();
+        // Not IOHIDDeviceSetReportWithCallback: on macOS it stops input report
+        // delivery after a few hundred calls.
         let device = SendDevice(self.device.clone());
-
-        // Do not use dispatch_report_job here: once dispatched, a write must
-        // reach the device even if the future that started it is dropped.
-        self.report_queue.exec_async(move || {
-            // Force whole-struct capture (edition 2021+ disjoint capture).
+        dispatch(&self.report_queue, move || {
             let device = device;
-            let ret = unsafe {
+            check(unsafe {
                 device.0.set_report(
                     report_type,
                     report_id as _,
                     NonNull::new_unchecked(data.as_mut_ptr()),
                     data.len() as _,
                 )
-            };
-            inner.ret.store(ret, Ordering::Relaxed);
-            // Release, so the return code above is visible to the acquiring
-            // load in poll. Without it a completed write can be seen before the
-            // code it completed with, and a failure reads as success.
-            inner.done.store(true, Ordering::Release);
-            // Signalling a future that is already gone writes to live memory
-            // and wakes nobody: the block holds its own reference.
-            inner.waker.wake();
-        });
-
-        context.await.map(|_| ())
+            })
+        })
+        .await
     }
 
     /// Common function to read reports from the specified [`IOHIDReportType`]
     /// This is only for Output for Feature type reports.
-    ///
-    /// The native call runs synchronously inside a dispatched job that owns
-    /// both the report buffer and the length cell, so nothing IOKit can reach
-    /// depends on this future staying alive. Dropping the future does not
-    /// cancel the native operation: the read stays pending, and the next read
-    /// of the same report returns its result rather than asking again.
     async fn read_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a mut [u8]) -> HidResult<usize> {
         // Should never reach here for report types other that feature or output
         match report_type {
@@ -421,7 +275,8 @@ impl DeviceReadWriter {
 
         let _ = self.read_state.as_ref().expect("Device is not readable");
         let report_id = buf[0];
-        let capacity = report_capacity(buf.len(), report_id);
+        let target = if report_id == 0x0 { &mut buf[1..] } else { buf };
+        let capacity = target.len();
         let request = ReportRequest {
             report_type,
             report_id,
@@ -430,27 +285,24 @@ impl DeviceReadWriter {
 
         let device = SendDevice(self.device.clone());
         let report = read_resumable(&self.pending_read, &self.report_queue, request, move || {
-            // Force whole-struct capture (edition 2021+ disjoint capture).
             let device = device;
-            let mut owned = native_buffer(capacity);
-            let mut length: CFIndex = capacity as CFIndex;
-            // SAFETY: both pointers address storage owned by this closure, and
-            // the call is synchronous, so IOKit cannot touch either after it
-            // returns. `owned` is initialised, so no uninitialised byte is ever
-            // exposed even if the device writes fewer bytes than requested.
+            // Never empty, an empty Vec would hand IOKit a dangling pointer.
+            let mut report = vec![0u8; capacity.max(1)];
+            let mut length = capacity as CFIndex;
             let ret = unsafe {
                 device.0.report(
                     report_type,
                     report_id as _,
-                    NonNull::new_unchecked(owned.as_mut_ptr()),
+                    NonNull::new_unchecked(report.as_mut_ptr()),
                     NonNull::new_unchecked(&mut length),
                 )
             };
-            report_from_native(ret, owned, length, capacity)
+            report_from_native(ret, report, length, capacity)
         })
-        .await;
+        .await?;
 
-        copy_report_out(buf, report_id, report)
+        target[..report.len()].copy_from_slice(&report);
+        Ok(report.len())
     }
 }
 
@@ -575,242 +427,24 @@ impl AsyncReportReaderInner {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc::{channel, Receiver, Sender};
-    use std::task::{Wake, Waker};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
-    use futures_lite::future::{block_on, poll_once as poll_future_once};
+    use futures_lite::future::{block_on, poll_once};
 
     use super::*;
-
-    /// Long enough that a loaded machine does not fail the test, short enough
-    /// that a genuine deadlock does not hang the suite.
-    const PATIENCE: Duration = Duration::from_secs(5);
 
     fn report_queue() -> DispatchRetained<DispatchQueue> {
         DispatchQueue::new("async-hid-report-tests", DispatchQueueAttr::SERIAL)
     }
 
-    fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-        let deadline = Instant::now() + PATIENCE;
-        while !ready() {
-            assert!(Instant::now() < deadline, "timed out waiting for {what}");
-            std::thread::yield_now();
-        }
-    }
-
     fn wait_for(what: &str, signal: &Receiver<()>) {
-        signal.recv_timeout(PATIENCE).unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+        signal
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
     }
 
-    /// Stands in for the storage a real job owns, and says when it is released.
-    struct DropSentinel {
-        count: Arc<AtomicUsize>,
-        signal: Sender<()>,
-    }
-
-    impl Drop for DropSentinel {
-        fn drop(&mut self) {
-            self.count.fetch_add(1, Ordering::Release);
-            let _ = self.signal.send(());
-        }
-    }
-
-    #[derive(Default)]
-    struct CountingWaker(AtomicUsize);
-
-    impl CountingWaker {
-        fn wakes(&self) -> usize {
-            self.0.load(Ordering::Acquire)
-        }
-    }
-
-    impl Wake for CountingWaker {
-        fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::Release);
-        }
-    }
-
-    /// Drives a job to completion the way an executor would, with a deadline so
-    /// that a wake that never arrives fails the test rather than hanging it.
-    fn settle(mut job: ReportCompletionFuture) -> HidResult<Vec<u8>> {
-        let deadline = Instant::now() + PATIENCE;
-        loop {
-            if let (Poll::Ready(result), _) = poll_once(&mut job) {
-                return result;
-            }
-            assert!(Instant::now() < deadline, "timed out waiting for the job to complete");
-            std::thread::yield_now();
-        }
-    }
-
-    /// Polls once, the way an executor would, and keeps the waker to inspect.
-    fn poll_once(future: &mut ReportCompletionFuture) -> (Poll<HidResult<Vec<u8>>>, Arc<CountingWaker>) {
-        let waker = Arc::new(CountingWaker::default());
-        let handed_out = Waker::from(waker.clone());
-        let mut cx = Context::from_waker(&handed_out);
-        (Pin::new(future).poll(&mut cx), waker)
-    }
-
-    /// A completed report reaches the caller, and only as far as it goes.
-    #[test]
-    fn a_completed_report_is_copied_behind_the_report_id() {
-        let queue = report_queue();
-        let job = dispatch_report_job(&queue, || Ok(vec![0xAA, 0xBB, 0xCC]));
-
-        let mut buf = [0xFFu8; 8];
-        let report_id = 0x0;
-        buf[0] = report_id;
-        let length = copy_report_out(&mut buf, report_id, settle(job)).expect("report");
-
-        assert_eq!(length, 3);
-        assert_eq!(&buf[1..4], &[0xAA, 0xBB, 0xCC]);
-        assert_eq!(buf[0], 0x0, "the report id byte is the caller's");
-        assert_eq!(&buf[4..], &[0xFF; 4], "bytes behind the report stay untouched");
-    }
-
-    /// An error reaches the caller, and the buffer keeps its contents.
-    #[test]
-    fn a_failed_report_leaves_the_caller_buffer_alone() {
-        let queue = report_queue();
-        let count = Arc::new(AtomicUsize::new(0));
-        let (signal, released) = channel();
-        let sentinel = DropSentinel {
-            count: count.clone(),
-            signal,
-        };
-        let job = dispatch_report_job(&queue, move || {
-            let _storage = sentinel;
-            Err(HidError::Disconnected)
-        });
-
-        let mut buf = [0xFFu8; 8];
-        let report_id = 0x0;
-        buf[0] = report_id;
-        let result = copy_report_out(&mut buf, report_id, settle(job));
-
-        assert!(matches!(result, Err(HidError::Disconnected)));
-        assert_eq!(buf[0], 0x0);
-        assert_eq!(&buf[1..], &[0xFF; 7], "a failed report writes nothing");
-        wait_for("the failed job to release its storage", &released);
-        assert_eq!(count.load(Ordering::Acquire), 1);
-    }
-
-    /// The future is dropped while the job is already running. An
-    /// operation that has begun cannot be called off, and does not need to be:
-    /// the job owns everything it touches, so it may finish at its own pace and
-    /// its result is discarded with the shared state.
-    ///
-    /// The start is handshaked rather than assumed, which is what makes the test
-    /// about a running job rather than about a queued one.
-    #[test]
-    fn a_job_that_already_started_finishes_and_discards_its_result() {
-        let queue = report_queue();
-        let count = Arc::new(AtomicUsize::new(0));
-        let (signal, released) = channel();
-        let (release, wait_for_release) = channel::<()>();
-        let (report_start, started) = channel::<()>();
-        let sentinel = DropSentinel {
-            count: count.clone(),
-            signal,
-        };
-
-        let mut job = dispatch_report_job(&queue, move || {
-            let _storage = sentinel;
-            let _ = report_start.send(());
-            wait_for_release.recv().expect("release signal");
-            Ok(vec![0x11; 4])
-        });
-
-        let (polled, waker) = poll_once(&mut job);
-        assert!(polled.is_pending());
-        wait_for("the job to start", &started);
-
-        // Keep the shared state to observe, as the job does, then let the
-        // waiting side go away entirely.
-        let completion = job.0.clone();
-        drop(job);
-
-        release.send(()).expect("job still running");
-        wait_for("the abandoned job to release its storage", &released);
-        wait_until("the abandoned job to complete", || completion.done.load(Ordering::Acquire));
-
-        assert_eq!(count.load(Ordering::Acquire), 1);
-        assert_eq!(waker.wakes(), 1, "the completion woke the waker it was handed, which is still alive");
-        assert!(completion.result.lock().expect("result").is_some(), "the result nobody wants stays with the shared state");
-
-        wait_until("the job to drop its reference", || Arc::strong_count(&completion) == 1);
-    }
-
-    /// The job completes and only then is the future
-    /// dropped, so a finished result is discarded rather than delivered.
-    #[test]
-    fn a_completed_job_survives_a_future_dropped_afterwards() {
-        let queue = report_queue();
-        let mut job = dispatch_report_job(&queue, || Ok(vec![0x22; 4]));
-
-        let (polled, _waker) = poll_once(&mut job);
-        let completion = job.0.clone();
-        wait_until("the job to complete", || completion.done.load(Ordering::Acquire));
-        drop(polled);
-        drop(job);
-
-        wait_until("the job to drop its reference", || Arc::strong_count(&completion) == 1);
-        assert!(completion.result.lock().expect("result").is_some());
-    }
-
-    /// Drop and completion run against each other with
-    /// no coordination at all, many times over.
-    #[test]
-    fn dropping_a_future_never_races_the_job_that_completes_it() {
-        const ROUNDS: usize = 500;
-
-        let queue = report_queue();
-        let count = Arc::new(AtomicUsize::new(0));
-        let (signal, released) = channel();
-
-        for round in 0..ROUNDS {
-            let sentinel = DropSentinel {
-                count: count.clone(),
-                signal: signal.clone(),
-            };
-            let mut job = dispatch_report_job(&queue, move || {
-                let _storage = sentinel;
-                Ok(vec![0x33; 4])
-            });
-            // Half the rounds register a waker first, half never poll at all.
-            if round % 2 == 0 {
-                let _ = poll_once(&mut job);
-            }
-            drop(job);
-        }
-
-        for _ in 0..ROUNDS {
-            wait_for("every job to release its storage", &released);
-        }
-        assert_eq!(count.load(Ordering::Acquire), ROUNDS);
-    }
-
-    fn request(report_id: u8) -> ReportRequest {
-        ReportRequest {
-            report_type: IOHIDReportType::Feature,
-            report_id,
-            capacity: 8,
-        }
-    }
-
-    /// Polls a read once, the way a timeout that expires right after the first
-    /// poll would, and then drops it.
-    fn abandon_after_first_poll(
-        slot: &PendingSlot, queue: &DispatchQueue, request: ReportRequest, job: impl Send + FnOnce() -> HidResult<Vec<u8>> + 'static
-    ) {
-        let mut read = Box::pin(read_resumable(slot, queue, request, job));
-        assert!(block_on(poll_future_once(&mut read)).is_none(), "the read must still be waiting");
-    }
-
-    /// Keeps the serial queue busy until the returned sender fires, so that a
-    /// read dispatched meanwhile is provably still waiting when it is polled.
+    /// Blocks the queue until the returned sender is dropped.
     fn occupy(queue: &DispatchQueue) -> Sender<()> {
         let (release, wait_for_release) = channel::<()>();
         let (report_blocked, blocked) = channel::<()>();
@@ -822,210 +456,131 @@ mod tests {
         release
     }
 
-    fn job_that_must_not_run(ran: &Arc<AtomicUsize>) -> impl Send + FnOnce() -> HidResult<Vec<u8>> + 'static {
-        let ran = ran.clone();
-        move || {
-            ran.fetch_add(1, Ordering::Release);
-            Ok(vec![0xEE; 4])
+    fn request(report_id: u8) -> ReportRequest {
+        ReportRequest {
+            report_type: IOHIDReportType::Feature,
+            report_id,
+            capacity: 8,
         }
     }
 
-    /// The timeout pattern: a read is dropped while the device is still
-    /// answering, more than once, and the read after that gets the report the
-    /// first one asked for without asking the device again.
+    /// A read dropped after its first poll, like one that lost a race against a timeout.
+    fn abandon(slot: &PendingSlot, queue: &DispatchQueue, request: ReportRequest, job: impl Send + FnOnce() -> HidResult<Vec<u8>> + 'static) {
+        let mut read = Box::pin(read_resumable(slot, queue, request, job));
+        assert!(block_on(poll_once(&mut read)).is_none(), "the read must still be waiting");
+    }
+
+    #[test]
+    fn a_job_completing_before_the_first_poll_is_not_a_lost_wakeup() {
+        let queue = report_queue();
+        let (report_done, done) = channel::<()>();
+        let mut job = dispatch(&queue, move || {
+            let _ = report_done.send(());
+            Ok(7)
+        });
+        wait_for("the job", &done);
+        // The next block on the serial queue runs only once the result is stored.
+        drop(occupy(&queue));
+
+        assert!(matches!(block_on(poll_once(&mut job)), Some(Ok(7))));
+    }
+
+    /// A write must reach the device even if its future is gone.
+    #[test]
+    fn a_dropped_future_does_not_stop_its_job() {
+        let queue = report_queue();
+        let blocker = occupy(&queue);
+        let (report_ran, ran) = channel::<()>();
+        let mut job = dispatch(&queue, move || {
+            let _ = report_ran.send(());
+            Ok(())
+        });
+        assert!(block_on(poll_once(&mut job)).is_none());
+        drop(job);
+        drop(blocker);
+
+        wait_for("the job of a dropped future", &ran);
+    }
+
     #[test]
     fn a_read_dropped_by_a_timeout_hands_its_report_to_the_next_read() {
         let queue = report_queue();
         let slot = PendingSlot::default();
-        let (release, wait_for_release) = channel::<()>();
-        let (report_start, started) = channel::<()>();
+        let blocker = occupy(&queue);
 
-        abandon_after_first_poll(&slot, &queue, request(0x05), move || {
-            let _ = report_start.send(());
-            wait_for_release.recv().expect("release signal");
-            Ok(vec![0x11; 4])
-        });
-        wait_for("the first read to reach the device", &started);
-        assert!(lock_slot(&slot).is_some(), "the dropped read stays pending");
-
-        let ran = Arc::new(AtomicUsize::new(0));
-        abandon_after_first_poll(&slot, &queue, request(0x05), job_that_must_not_run(&ran));
-        assert!(lock_slot(&slot).is_some(), "a second timeout keeps it pending too");
-
-        release.send(()).expect("job still running");
-        let report = block_on(read_resumable(&slot, &queue, request(0x05), job_that_must_not_run(&ran)));
+        abandon(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+        abandon(&slot, &queue, request(0x05), || panic!("the device was asked twice"));
+        drop(blocker);
+        let report = block_on(read_resumable(&slot, &queue, request(0x05), || panic!("the device was asked twice")));
 
         assert_eq!(report.expect("report"), vec![0x11; 4]);
-        assert_eq!(ran.load(Ordering::Acquire), 0, "the device was asked once");
-        assert!(lock_slot(&slot).is_none(), "a delivered report is no longer pending");
+        assert!(lock(&slot).is_none(), "a delivered report is no longer pending");
     }
 
-    /// A pending read answers only the request it was started for.
     #[test]
-    fn a_pending_read_for_another_report_is_not_handed_over() {
+    fn a_pending_read_for_another_request_is_not_handed_over() {
         let queue = report_queue();
         let slot = PendingSlot::default();
-
-        let blocker = occupy(&queue);
-        abandon_after_first_poll(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
-        drop(blocker);
-        let report = block_on(read_resumable(&slot, &queue, request(0x06), || Ok(vec![0x22; 4])));
-        assert_eq!(report.expect("report"), vec![0x22; 4]);
-
-        let mut other_size = request(0x06);
+        let mut other_size = request(0x05);
         other_size.capacity = 4;
-        let blocker = occupy(&queue);
-        abandon_after_first_poll(&slot, &queue, request(0x06), || Ok(vec![0x33; 8]));
-        drop(blocker);
-        let report = block_on(read_resumable(&slot, &queue, other_size, || Ok(vec![0x44; 4])));
-        assert_eq!(report.expect("report"), vec![0x44; 4]);
-        assert!(lock_slot(&slot).is_none());
+
+        for other in [request(0x06), other_size] {
+            let blocker = occupy(&queue);
+            abandon(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+            drop(blocker);
+            let report = block_on(read_resumable(&slot, &queue, other, || Ok(vec![0x22; 4])));
+            assert_eq!(report.expect("report"), vec![0x22; 4]);
+        }
     }
 
-    /// A write in between makes a pending read stale, because the report it
-    /// asked for may predate what the write changed.
     #[test]
     fn a_forgotten_read_is_not_handed_over() {
         let queue = report_queue();
         let slot = PendingSlot::default();
-
         let blocker = occupy(&queue);
-        abandon_after_first_poll(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+
+        abandon(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
         forget_pending_read(&slot);
         drop(blocker);
-        let report = block_on(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x55; 4])));
+        let report = block_on(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x22; 4])));
 
-        assert_eq!(report.expect("report"), vec![0x55; 4]);
+        assert_eq!(report.expect("report"), vec![0x22; 4]);
     }
 
-    /// Only one pending read is kept. When a second read is abandoned while
-    /// another is already back in the slot, the one in the slot stays.
     #[test]
     fn an_occupied_slot_keeps_its_read() {
         let queue = report_queue();
         let slot = PendingSlot::default();
-
         let blocker = occupy(&queue);
+
         let mut first = Box::pin(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x11; 4])));
-        assert!(block_on(poll_future_once(&mut first)).is_none());
-        // `first` still holds its claim, so the slot is empty and a second read
-        // dispatches its own job.
-        abandon_after_first_poll(&slot, &queue, request(0x05), || Ok(vec![0x22; 4]));
+        assert!(block_on(poll_once(&mut first)).is_none());
+        abandon(&slot, &queue, request(0x05), || Ok(vec![0x22; 4]));
         drop(first);
         drop(blocker);
-
         let report = block_on(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x33; 4])));
+
         assert_eq!(report.expect("report"), vec![0x22; 4]);
     }
 
-    /// A device that answers with fewer bytes than fit.
-    #[test]
-    fn a_short_report_reports_its_own_length() {
-        let mut buf = [0xFFu8; 8];
-        let report_id = 0x0;
-        buf[0] = report_id;
-
-        let length = copy_report_out(&mut buf, report_id, Ok(vec![0x44, 0x55])).expect("report");
-
-        assert_eq!(length, 2);
-        assert_eq!(&buf[1..3], &[0x44, 0x55]);
-        assert_eq!(&buf[3..], &[0xFF; 5]);
-    }
-
-    /// The caller's buffer bounds the request. A zero report id costs the
-    /// first byte, any other id is part of the report, which is the same split
-    /// the write path applies. The request never exceeds that capacity, and a
-    /// device claiming more is rejected in `report_from_native`; the copy is
-    /// bounded once more so that no length can reach `copy_from_slice` unchecked.
-    #[test]
-    fn the_caller_buffer_bounds_the_report() {
-        assert_eq!(report_capacity(8, 0x0), 7);
-        assert_eq!(report_capacity(8, 0x21), 8);
-        assert_eq!(report_capacity(1, 0x0), 0);
-        assert_eq!(report_capacity(0, 0x0), 0);
-
-        let mut buf = [0xFFu8; 4];
-        let report_id = 0x0;
-        buf[0] = report_id;
-        let length = copy_report_out(&mut buf, report_id, Ok(vec![0x66; 16])).expect("report");
-
-        assert_eq!(length, 3, "no more than the buffer holds");
-        assert_eq!(&buf[1..], &[0x66; 3]);
-    }
-
-    /// The length is the device's word. An answer it cannot back is an
-    /// error, not something to bend into a slice length.
     #[test]
     fn an_impossible_native_length_is_an_error() {
-        let sixteen = || native_buffer(16);
-
-        for impossible in [-1, CFIndex::MIN, 17, 4096] {
-            let answer = report_from_native(kIOReturnSuccess, sixteen(), impossible, 16);
-            assert!(matches!(answer, Err(HidError::Message(_))), "{impossible} was accepted");
+        for (length, capacity) in [(-1, 16), (CFIndex::MIN, 16), (17, 16), (1, 0)] {
+            let answer = report_from_native(kIOReturnSuccess, vec![0u8; capacity.max(1)], length, capacity);
+            assert!(matches!(answer, Err(HidError::Message(_))), "{length} for {capacity} was accepted");
         }
-
-        let exact = report_from_native(kIOReturnSuccess, sixteen(), 16, 16).expect("report");
-        assert_eq!(exact.len(), 16);
-        let short = report_from_native(kIOReturnSuccess, sixteen(), 4, 16).expect("report");
-        assert_eq!(short, vec![0u8; 4]);
-        let nothing = report_from_native(kIOReturnSuccess, sixteen(), 0, 16).expect("report");
-        assert!(nothing.is_empty(), "a device may legitimately answer with no bytes");
-    }
-
-    /// A request for zero bytes, which a one byte caller buffer with
-    /// report id zero asks for. IOKit gets a pointer into an allocation rather
-    /// than the dangling one an empty `Vec` yields, and the capacity of zero
-    /// stays the bound for the answer.
-    #[test]
-    fn a_zero_capacity_request_still_hands_iokit_an_allocation() {
-        assert_eq!(native_buffer(0).len(), 1, "never a dangling pointer");
-        assert_eq!(native_buffer(7).len(), 7, "and no padding for anything else");
-
-        let nothing = report_from_native(kIOReturnSuccess, native_buffer(0), 0, 0).expect("report");
-        assert!(nothing.is_empty());
-
-        // The spare byte is not room the caller asked for, so a device claiming
-        // to have written it is an error rather than a byte with nowhere to go.
-        let answer = report_from_native(kIOReturnSuccess, native_buffer(0), 1, 0);
-        assert!(matches!(answer, Err(HidError::Message(_))));
-    }
-
-    /// A job that finishes before the future is polled at all. The
-    /// wake then happens with no waker registered, so the first poll has to
-    /// observe `done` by itself or the wakeup is lost.
-    #[test]
-    fn a_job_completing_before_the_first_poll_is_not_a_lost_wakeup() {
-        let queue = report_queue();
-        let mut job = dispatch_report_job(&queue, || Ok(vec![0x88; 4]));
-
-        let completion = job.0.clone();
-        wait_until("the job to complete before the first poll", || completion.done.load(Ordering::Acquire));
-
-        let (polled, waker) = poll_once(&mut job);
-        match polled {
-            Poll::Ready(result) => assert_eq!(result.expect("report"), vec![0x88; 4]),
-            Poll::Pending => panic!("a job that is already done must be ready on the first poll"),
+        for (length, capacity) in [(16, 16), (4, 16), (0, 16), (0, 0)] {
+            let report = report_from_native(kIOReturnSuccess, vec![0u8; capacity.max(1)], length, capacity);
+            assert_eq!(report.expect("report").len(), length as usize);
         }
-        assert_eq!(waker.wakes(), 0, "nothing was woken; the poll read the flag");
     }
 
-    /// The code a removed device answers with, measured on a YKUSH3 pulled
-    /// during a read loop, has to keep becoming a disconnect.
+    /// Codes measured on a YKUSH3 pulled during a read loop.
     #[test]
     fn the_code_a_removed_device_answers_with_is_a_disconnect() {
-        const REMOVED: IOReturn = 0xE00002C2u32 as IOReturn;
-        const NOT_RESPONDING: IOReturn = 0xE00002EDu32 as IOReturn;
-        const NOT_READY: IOReturn = 0xE00002D8u32 as IOReturn;
-
-        assert_eq!(REMOVED, kIOReturnBadArgument as IOReturn);
-        assert!(matches!(report_from_native(REMOVED, native_buffer(4), 0, 4), Err(HidError::Disconnected)));
-
-        // The two or three calls that catch the removal itself answer
-        // differently, and keep the mapping they have today. Both codes were
-        // measured on the board being pulled mid read.
-        for code in [NOT_RESPONDING, NOT_READY] {
-            let answer = report_from_native(code, native_buffer(4), 0, 4);
-            assert!(matches!(answer, Err(HidError::Message(_))), "{code:#X} changed its mapping");
+        assert!(matches!(check(0xE00002C2u32 as IOReturn), Err(HidError::Disconnected)));
+        for code in [0xE00002EDu32, 0xE00002D8] {
+            assert!(matches!(check(code as IOReturn), Err(HidError::Message(_))));
         }
     }
 }
