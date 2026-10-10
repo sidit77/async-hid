@@ -26,7 +26,7 @@ pub struct DeviceReadWriter {
     /// A dropped feature or output report read, taken over by the next matching read.
     pending_read: PendingSlot,
     /// Runs GetReport and SetReport, apart from the queue that delivers input reports.
-    report_queue: DispatchRetained<DispatchQueue>,
+    report_queue: DispatchRetained<DispatchQueue>
 }
 
 unsafe impl Send for DeviceReadWriter {}
@@ -56,7 +56,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 struct Completion<T> {
     result: Mutex<Option<HidResult<T>>>,
-    waker: AtomicWaker,
+    waker: AtomicWaker
 }
 
 /// Waits for a job on the report queue. Dropping it does not stop the job.
@@ -69,7 +69,7 @@ impl<T> Future for CompletionFuture<T> {
         self.0.waker.register(cx.waker());
         match lock(&self.0.result).take() {
             Some(result) => Poll::Ready(result),
-            None => Poll::Pending,
+            None => Poll::Pending
         }
     }
 }
@@ -79,11 +79,11 @@ impl<T> Future for CompletionFuture<T> {
 fn dispatch<T, F>(queue: &DispatchQueue, job: F) -> CompletionFuture<T>
 where
     T: Send + 'static,
-    F: Send + FnOnce() -> HidResult<T> + 'static,
+    F: Send + FnOnce() -> HidResult<T> + 'static
 {
     let completion = Arc::new(Completion {
         result: Mutex::new(None),
-        waker: AtomicWaker::new(),
+        waker: AtomicWaker::new()
     });
     let job_completion = completion.clone();
     queue.exec_async(move || {
@@ -99,7 +99,7 @@ fn check(ret: IOReturn) -> HidResult<()> {
         kIOReturnSuccess => Ok(()),
         // IOKit answers a removed device with a bad argument.
         other if other == kIOReturnBadArgument as IOReturn => Err(HidError::Disconnected),
-        other => Err(HidError::message(format!("report transaction failed: {:#X}", other))),
+        other => Err(HidError::message(format!("report transaction failed: {:#X}", other)))
     }
 }
 
@@ -111,7 +111,9 @@ fn report_from_native(ret: IOReturn, mut report: Vec<u8>, length: CFIndex, capac
             report.truncate(length);
             Ok(report)
         }
-        _ => Err(HidError::message(format!("the device reported {length} bytes for a request of {capacity}"))),
+        _ => Err(HidError::message(format!(
+            "the device reported {length} bytes for a request of {capacity}"
+        )))
     }
 }
 
@@ -119,12 +121,12 @@ fn report_from_native(ret: IOReturn, mut report: Vec<u8>, length: CFIndex, capac
 struct ReportRequest {
     report_type: IOHIDReportType,
     report_id: u8,
-    capacity: usize,
+    capacity: usize
 }
 
 struct PendingRead {
     request: ReportRequest,
-    completion: CompletionFuture<Vec<u8>>,
+    completion: CompletionFuture<Vec<u8>>
 }
 
 type PendingSlot = Mutex<Option<PendingRead>>;
@@ -137,7 +139,7 @@ fn forget_pending_read(slot: &PendingSlot) {
 /// Dropped before the result arrives, it goes back for the next read.
 struct ClaimedRead<'a> {
     slot: &'a PendingSlot,
-    pending: Option<PendingRead>,
+    pending: Option<PendingRead>
 }
 
 impl Drop for ClaimedRead<'_> {
@@ -152,15 +154,17 @@ impl Drop for ClaimedRead<'_> {
 /// Reads one report, taking over a pending read of the same request if there is one.
 async fn read_resumable<F>(slot: &PendingSlot, queue: &DispatchQueue, request: ReportRequest, job: F) -> HidResult<Vec<u8>>
 where
-    F: Send + FnOnce() -> HidResult<Vec<u8>> + 'static,
+    F: Send + FnOnce() -> HidResult<Vec<u8>> + 'static
 {
     let mut claimed = ClaimedRead {
         slot,
-        pending: lock(slot).take().filter(|pending| pending.request == request),
+        pending: lock(slot)
+            .take()
+            .filter(|pending| pending.request == request)
     };
     let pending = claimed.pending.get_or_insert_with(|| PendingRead {
         request,
-        completion: dispatch(queue, job),
+        completion: dispatch(queue, job)
     });
     let report = (&mut pending.completion).await;
     claimed.pending = None;
@@ -234,7 +238,7 @@ impl DeviceReadWriter {
             read_state,
             writable: write,
             pending_read: Mutex::new(None),
-            report_queue,
+            report_queue
         })
     }
 
@@ -280,7 +284,7 @@ impl DeviceReadWriter {
         let request = ReportRequest {
             report_type,
             report_id,
-            capacity,
+            capacity
         };
 
         let device = SendDevice(self.device.clone());
@@ -294,7 +298,7 @@ impl DeviceReadWriter {
                     report_type,
                     report_id as _,
                     NonNull::new_unchecked(report.as_mut_ptr()),
-                    NonNull::new_unchecked(&mut length),
+                    NonNull::new_unchecked(&mut length)
                 )
             };
             report_from_native(ret, report, length, capacity)
@@ -460,7 +464,7 @@ mod tests {
         ReportRequest {
             report_type: IOHIDReportType::Feature,
             report_id,
-            capacity: 8,
+            capacity: 8
         }
     }
 
