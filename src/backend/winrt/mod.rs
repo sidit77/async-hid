@@ -86,11 +86,7 @@ impl Backend for WinRtBackend {
     }
 
     async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
-        let mode = match (read, write) {
-            (true, false) => FileAccessMode::Read,
-            (_, true) => FileAccessMode::ReadWrite,
-            (false, false) => panic!("Not supported")
-        };
+        let mode = access_mode(read, write).expect("Not supported");
         let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, mode)?
             .await
@@ -102,7 +98,7 @@ impl Backend for WinRtBackend {
             true => Some(InputReceiver::new(self, id, device.clone())?),
             false => None
         };
-        Ok((input, read.then_some(device)))
+        Ok((input, write.then_some(device)))
     }
 
     async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
@@ -114,6 +110,18 @@ impl Backend for WinRtBackend {
                 e => e.into()
             })?;
         Ok(device)
+    }
+}
+
+/// Maps the requested access to a WinRT `FileAccessMode`.
+///
+/// WinRT has no write-only mode, so a write-only open uses `ReadWrite`.
+/// Returns `None` when neither read nor write is requested.
+fn access_mode(read: bool, write: bool) -> Option<FileAccessMode> {
+    match (read, write) {
+        (true, false) => Some(FileAccessMode::Read),
+        (_, true) => Some(FileAccessMode::ReadWrite),
+        (false, false) => None
     }
 }
 
@@ -369,5 +377,18 @@ impl WinRtBackend {
         let count = watchers.len();
         watchers.retain(|watcher| !watcher.is_closed());
         trace!("Cleared {} event watchers ({} remaining)", count - watchers.len(), watchers.len());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_mode_mapping() {
+        assert_eq!(access_mode(true, false), Some(FileAccessMode::Read));
+        assert_eq!(access_mode(false, true), Some(FileAccessMode::ReadWrite));
+        assert_eq!(access_mode(true, true), Some(FileAccessMode::ReadWrite));
+        assert_eq!(access_mode(false, false), None);
     }
 }
