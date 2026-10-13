@@ -23,8 +23,6 @@ pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
     read_state: Option<ReaderState>,
     writable: bool,
-    /// A dropped feature or output report read, taken over by the next matching read.
-    pending_read: PendingSlot,
     /// Runs GetReport and SetReport, apart from the queue that delivers input reports.
     report_queue: DispatchRetained<DispatchQueue>
 }
@@ -129,46 +127,35 @@ struct PendingRead {
     completion: CompletionFuture<Vec<u8>>
 }
 
-type PendingSlot = Mutex<Option<PendingRead>>;
-
-fn forget_pending_read(slot: &PendingSlot) {
-    lock(slot).take();
-}
-
-/// A pending read taken out of the slot, so that each completion has one waiter.
-/// Dropped before the result arrives, it goes back for the next read.
-struct ClaimedRead<'a> {
-    slot: &'a PendingSlot,
-    pending: Option<PendingRead>
-}
-
-impl Drop for ClaimedRead<'_> {
-    fn drop(&mut self) {
-        if let Some(pending) = self.pending.take() {
-            // A clone of the handle may have left its own read meanwhile; keep that one.
-            lock(self.slot).get_or_insert(pending);
-        }
-    }
-}
-
 /// Reads one report, taking over a pending read of the same request if there is one.
-async fn read_resumable<F>(slot: &PendingSlot, queue: &DispatchQueue, request: ReportRequest, job: F) -> HidResult<Vec<u8>>
+/// Dropped before the result arrives, the read stays in `slot` for the next read.
+async fn read_resumable<F>(slot: &mut Option<PendingRead>, queue: &DispatchQueue, request: ReportRequest, job: F) -> HidResult<Vec<u8>>
 where
     F: Send + FnOnce() -> HidResult<Vec<u8>> + 'static
 {
-    let mut claimed = ClaimedRead {
-        slot,
-        pending: lock(slot)
-            .take()
-            .filter(|pending| pending.request == request)
-    };
-    let pending = claimed.pending.get_or_insert_with(|| PendingRead {
+    if slot
+        .as_ref()
+        .is_some_and(|pending| pending.request != request)
+    {
+        *slot = None;
+    }
+    let pending = slot.get_or_insert_with(|| PendingRead {
         request,
         completion: dispatch(queue, job)
     });
     let report = (&mut pending.completion).await;
-    claimed.pending = None;
+    *slot = None;
     report
+}
+
+/// Discards the pending read before the write starts, so that a report read
+/// before this write never answers a read after it.
+fn dispatch_write<F>(slot: &mut Option<PendingRead>, queue: &DispatchQueue, job: F) -> CompletionFuture<()>
+where
+    F: Send + FnOnce() -> HidResult<()> + 'static
+{
+    *slot = None;
+    dispatch(queue, job)
 }
 
 impl DeviceReadWriter {
@@ -237,24 +224,20 @@ impl DeviceReadWriter {
             device,
             read_state,
             writable: write,
-            pending_read: Mutex::new(None),
             report_queue
         })
     }
 
-    /// Common function to write reports from the specified [`IOHIDReportType`]
-    async fn write_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a [u8]) -> HidResult<()> {
+    /// Builds the SetReport job for the specified [`IOHIDReportType`]
+    fn set_report_job(&self, report_type: IOHIDReportType, buf: &[u8]) -> impl Send + FnOnce() -> HidResult<()> + 'static {
         assert!(self.writable, "Device is not writable");
         let report_id = buf[0];
         let mut data = if report_id == 0x0 { &buf[1..] } else { buf }.to_vec();
 
-        // A report read before this write must not answer a read after it.
-        forget_pending_read(&self.pending_read);
-
         // Not IOHIDDeviceSetReportWithCallback: on macOS it stops input report
         // delivery after a few hundred calls.
         let device = SendDevice(self.device.clone());
-        dispatch(&self.report_queue, move || {
+        move || {
             let device = device;
             check(unsafe {
                 device.0.set_report(
@@ -264,13 +247,14 @@ impl DeviceReadWriter {
                     data.len() as _,
                 )
             })
-        })
-        .await
+        }
     }
 
     /// Common function to read reports from the specified [`IOHIDReportType`]
     /// This is only for Output for Feature type reports.
-    async fn read_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a mut [u8]) -> HidResult<usize> {
+    async fn read_report<'a>(
+        &'a self, report_type: IOHIDReportType, buf: &'a mut [u8], pending_read: &'a mut Option<PendingRead>
+    ) -> HidResult<usize> {
         // Should never reach here for report types other that feature or output
         match report_type {
             IOHIDReportType::Feature | IOHIDReportType::Output => {}
@@ -288,7 +272,7 @@ impl DeviceReadWriter {
         };
 
         let device = SendDevice(self.device.clone());
-        let report = read_resumable(&self.pending_read, &self.report_queue, request, move || {
+        let report = read_resumable(pending_read, &self.report_queue, request, move || {
             let device = device;
             // Never empty, an empty Vec would hand IOKit a dangling pointer.
             let mut report = vec![0u8; capacity.max(1)];
@@ -321,17 +305,32 @@ impl AsyncHidRead for Arc<DeviceReadWriter> {
 
 impl AsyncHidWrite for Arc<DeviceReadWriter> {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
-        self.write_report(IOHIDReportType::Output, buf).await
+        dispatch(&self.report_queue, self.set_report_job(IOHIDReportType::Output, buf)).await
     }
 }
 
-impl AsyncHidFeatureHandle for Arc<DeviceReadWriter> {
+pub struct FeatureReadWriter {
+    device: DeviceReadWriter,
+    /// A dropped read, taken over by the next matching read.
+    pending_read: Option<PendingRead>
+}
+
+impl FeatureReadWriter {
+    pub fn new(device: DeviceReadWriter) -> Self {
+        Self { device, pending_read: None }
+    }
+}
+
+impl AsyncHidFeatureHandle for FeatureReadWriter {
     async fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
-        self.read_report(IOHIDReportType::Feature, buf).await
+        self.device
+            .read_report(IOHIDReportType::Feature, buf, &mut self.pending_read)
+            .await
     }
 
     async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
-        self.write_report(IOHIDReportType::Feature, buf).await
+        let job = self.device.set_report_job(IOHIDReportType::Feature, buf);
+        dispatch_write(&mut self.pending_read, &self.device.report_queue, job).await
     }
 }
 
@@ -469,7 +468,9 @@ mod tests {
     }
 
     /// A read dropped after its first poll, like one that lost a race against a timeout.
-    fn abandon(slot: &PendingSlot, queue: &DispatchQueue, request: ReportRequest, job: impl Send + FnOnce() -> HidResult<Vec<u8>> + 'static) {
+    fn abandon(
+        slot: &mut Option<PendingRead>, queue: &DispatchQueue, request: ReportRequest, job: impl Send + FnOnce() -> HidResult<Vec<u8>> + 'static
+    ) {
         let mut read = Box::pin(read_resumable(slot, queue, request, job));
         assert!(block_on(poll_once(&mut read)).is_none(), "the read must still be waiting");
     }
@@ -509,60 +510,44 @@ mod tests {
     #[test]
     fn a_read_dropped_by_a_timeout_hands_its_report_to_the_next_read() {
         let queue = report_queue();
-        let slot = PendingSlot::default();
+        let mut slot = None;
         let blocker = occupy(&queue);
 
-        abandon(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
-        abandon(&slot, &queue, request(0x05), || panic!("the device was asked twice"));
+        abandon(&mut slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+        abandon(&mut slot, &queue, request(0x05), || panic!("the device was asked twice"));
         drop(blocker);
-        let report = block_on(read_resumable(&slot, &queue, request(0x05), || panic!("the device was asked twice")));
+        let report = block_on(read_resumable(&mut slot, &queue, request(0x05), || panic!("the device was asked twice")));
 
         assert_eq!(report.expect("report"), vec![0x11; 4]);
-        assert!(lock(&slot).is_none(), "a delivered report is no longer pending");
+        assert!(slot.is_none(), "a delivered report is no longer pending");
     }
 
     #[test]
     fn a_pending_read_for_another_request_is_not_handed_over() {
         let queue = report_queue();
-        let slot = PendingSlot::default();
+        let mut slot = None;
         let mut other_size = request(0x05);
         other_size.capacity = 4;
 
         for other in [request(0x06), other_size] {
             let blocker = occupy(&queue);
-            abandon(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+            abandon(&mut slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
             drop(blocker);
-            let report = block_on(read_resumable(&slot, &queue, other, || Ok(vec![0x22; 4])));
+            let report = block_on(read_resumable(&mut slot, &queue, other, || Ok(vec![0x22; 4])));
             assert_eq!(report.expect("report"), vec![0x22; 4]);
         }
     }
 
     #[test]
-    fn a_forgotten_read_is_not_handed_over() {
+    fn a_write_discards_a_pending_read() {
         let queue = report_queue();
-        let slot = PendingSlot::default();
+        let mut slot = None;
         let blocker = occupy(&queue);
 
-        abandon(&slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
-        forget_pending_read(&slot);
+        abandon(&mut slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+        drop(dispatch_write(&mut slot, &queue, || Ok(())));
         drop(blocker);
-        let report = block_on(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x22; 4])));
-
-        assert_eq!(report.expect("report"), vec![0x22; 4]);
-    }
-
-    #[test]
-    fn an_occupied_slot_keeps_its_read() {
-        let queue = report_queue();
-        let slot = PendingSlot::default();
-        let blocker = occupy(&queue);
-
-        let mut first = Box::pin(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x11; 4])));
-        assert!(block_on(poll_once(&mut first)).is_none());
-        abandon(&slot, &queue, request(0x05), || Ok(vec![0x22; 4]));
-        drop(first);
-        drop(blocker);
-        let report = block_on(read_resumable(&slot, &queue, request(0x05), || Ok(vec![0x33; 4])));
+        let report = block_on(read_resumable(&mut slot, &queue, request(0x05), || Ok(vec![0x22; 4])));
 
         assert_eq!(report.expect("report"), vec![0x22; 4]);
     }
