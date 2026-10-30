@@ -1,28 +1,30 @@
 use std::ffi::c_void;
 use std::future::{poll_fn, Future};
 use std::mem::ManuallyDrop;
+use std::pin::Pin;
 use std::ptr::NonNull;
 use std::slice::from_raw_parts;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once};
-use std::task::Poll;
+use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError};
+use std::task::{Context, Poll};
 
 use atomic_waker::AtomicWaker;
 use block2::RcBlock;
 use crossbeam_queue::ArrayQueue;
 use dispatch2::{DispatchQoS, DispatchQueue, DispatchQueueAttr, DispatchRetained, GlobalQueueIdentifier};
-use log::{error, trace};
+use log::trace;
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
-use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
+use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnBadArgument, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
 
-use crate::backend::iohidmanager::context::CallbackContext;
 use crate::backend::iohidmanager::device_info::property_key;
 use crate::{ensure, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
 
 pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
     read_state: Option<ReaderState>,
-    write_state: Option<WriterState>,
+    writable: bool,
+    /// Runs GetReport and SetReport, apart from the queue that delivers input reports.
+    report_queue: DispatchRetained<DispatchQueue>
 }
 
 unsafe impl Send for DeviceReadWriter {}
@@ -33,28 +35,128 @@ struct ReaderState {
     report_buffer: ManuallyDrop<Vec<u8>>,
 }
 
-struct WriterState {
-    /// Writes for one device are serialized and ordered, and the queue the
-    /// device delivers its input reports on is never blocked by one.
-    queue: DispatchRetained<DispatchQueue>,
-}
+unsafe impl Send for ReaderState {}
+unsafe impl Sync for ReaderState {}
 
-/// A device handle that may be moved to another thread.
+/// A device handle that may be moved to a dispatch worker.
 ///
 /// # Safety
 ///
-/// Two things make this sound. CoreFoundation reference counts are atomic, so
-/// retaining and releasing an `IOHIDDevice` from a dispatch worker is defined,
-/// including the case where the block holds the last reference because the
-/// `DeviceReadWriter` was dropped while the write was still queued. And
-/// `IOHIDDeviceSetReport`, the only thing called through this handle, is
-/// synchronous and carries no run loop or queue affinity, unlike the
-/// callback-driven calls, which belong to the queue the device was attached to.
+/// CoreFoundation reference counts are atomic, and the synchronous
+/// `IOHIDDeviceGetReport` and `IOHIDDeviceSetReport` have no queue affinity.
 struct SendDevice(CFRetained<IOHIDDevice>);
 unsafe impl Send for SendDevice {}
 
-unsafe impl Send for ReaderState {}
-unsafe impl Sync for ReaderState {}
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    // Nothing panics while one of these locks is held.
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+struct Completion<T> {
+    result: Mutex<Option<HidResult<T>>>,
+    waker: AtomicWaker
+}
+
+/// Waits for a job on the report queue. Dropping it does not stop the job.
+struct CompletionFuture<T>(Arc<Completion<T>>);
+
+impl<T> Future for CompletionFuture<T> {
+    type Output = HidResult<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.0.waker.register(cx.waker());
+        match lock(&self.0.result).take() {
+            Some(result) => Poll::Ready(result),
+            None => Poll::Pending
+        }
+    }
+}
+
+/// Runs `job` on `queue`. The job must own everything the native call touches,
+/// because it runs to completion even if the future is dropped.
+fn dispatch<T, F>(queue: &DispatchQueue, job: F) -> CompletionFuture<T>
+where
+    T: Send + 'static,
+    F: Send + FnOnce() -> HidResult<T> + 'static
+{
+    let completion = Arc::new(Completion {
+        result: Mutex::new(None),
+        waker: AtomicWaker::new()
+    });
+    let job_completion = completion.clone();
+    queue.exec_async(move || {
+        *lock(&job_completion.result) = Some(job());
+        job_completion.waker.wake();
+    });
+    CompletionFuture(completion)
+}
+
+fn check(ret: IOReturn) -> HidResult<()> {
+    #[allow(non_upper_case_globals)]
+    match ret {
+        kIOReturnSuccess => Ok(()),
+        // IOKit answers a removed device with a bad argument.
+        other if other == kIOReturnBadArgument as IOReturn => Err(HidError::Disconnected),
+        other => Err(HidError::message(format!("report transaction failed: {:#X}", other)))
+    }
+}
+
+/// The length comes from the device, so it is checked before it becomes a slice length.
+fn report_from_native(ret: IOReturn, mut report: Vec<u8>, length: CFIndex, capacity: usize) -> HidResult<Vec<u8>> {
+    check(ret)?;
+    match usize::try_from(length) {
+        Ok(length) if length <= capacity => {
+            report.truncate(length);
+            Ok(report)
+        }
+        _ => Err(HidError::message(format!(
+            "the device reported {length} bytes for a request of {capacity}"
+        )))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReportRequest {
+    report_type: IOHIDReportType,
+    report_id: u8,
+    capacity: usize
+}
+
+struct PendingRead {
+    request: ReportRequest,
+    completion: CompletionFuture<Vec<u8>>
+}
+
+/// Reads one report, taking over a pending read of the same request if there is one.
+/// Dropped before the result arrives, the read stays in `slot` for the next read.
+async fn read_resumable<F>(slot: &mut Option<PendingRead>, queue: &DispatchQueue, request: ReportRequest, job: F) -> HidResult<Vec<u8>>
+where
+    F: Send + FnOnce() -> HidResult<Vec<u8>> + 'static
+{
+    if slot
+        .as_ref()
+        .is_some_and(|pending| pending.request != request)
+    {
+        *slot = None;
+    }
+    let pending = slot.get_or_insert_with(|| PendingRead {
+        request,
+        completion: dispatch(queue, job)
+    });
+    let report = (&mut pending.completion).await;
+    *slot = None;
+    report
+}
+
+/// Discards the pending read before the write starts, so that a report read
+/// before this write never answers a read after it.
+fn dispatch_write<F>(slot: &mut Option<PendingRead>, queue: &DispatchQueue, job: F) -> CompletionFuture<()>
+where
+    F: Send + FnOnce() -> HidResult<()> + 'static
+{
+    *slot = None;
+    dispatch(queue, job)
+}
 
 impl DeviceReadWriter {
     pub const DEVICE_OPTIONS: IOOptionBits = 0;
@@ -112,78 +214,47 @@ impl DeviceReadWriter {
             }
         });
 
-        let write_state = write.then(|| {
-            // Targeted at a user initiated global queue rather than given a
-            // QoS floor afterwards: the floor may only be set while the object
-            // is still inactive, and a queue from `new` is already active.
-            let target = DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(DispatchQoS::UserInitiated));
-            let queue = DispatchQueue::new_with_target("async-hid-write", DispatchQueueAttr::SERIAL, Some(&target));
-            WriterState { queue }
-        });
+        // A QoS floor can only be set on an inactive queue, so target a global queue instead.
+        let target = DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(DispatchQoS::UserInitiated));
+        let report_queue = DispatchQueue::new_with_target("async-hid-reports", DispatchQueueAttr::SERIAL, Some(&target));
 
         device.activate();
 
         Ok(Self {
             device,
             read_state,
-            write_state,
+            writable: write,
+            report_queue
         })
     }
 
-    /// Common function to write reports from the specified [`IOHIDReportType`]
-    async fn write_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a [u8]) -> HidResult<()> {
-        let write_state = self.write_state.as_ref().expect("Device is not writable");
+    /// Builds the SetReport job for the specified [`IOHIDReportType`]
+    fn set_report_job(&self, report_type: IOHIDReportType, buf: &[u8]) -> impl Send + FnOnce() -> HidResult<()> + 'static {
+        assert!(self.writable, "Device is not writable");
         let report_id = buf[0];
-        let data_to_send = if report_id == 0x0 { &buf[1..] } else { buf };
+        let mut data = if report_id == 0x0 { &buf[1..] } else { buf }.to_vec();
 
-        // The synchronous SetReport runs on the device's own serial queue and is
-        // awaited, so the signature stays asynchronous and no executor thread is
-        // blocked. IOHIDDeviceSetReportWithCallback is deliberately not used: on
-        // macOS it stops input report delivery after a few hundred calls.
-        //
-        // There is no timeout. SetReport offers none, and a crate that does not
-        // pick a runtime has no timer of its own to race it against.
-        let context = CallbackContext::<()>::new();
-        let inner = context.inner();
-
-        // The block outlives this frame as far as the type system knows, so it
-        // gets owned copies. IOKit only reads the report, and owning it is what
-        // makes a future dropped mid write cost a wasted write and nothing else.
-        let data = data_to_send.to_vec();
+        // Not IOHIDDeviceSetReportWithCallback: on macOS it stops input report
+        // delivery after a few hundred calls.
         let device = SendDevice(self.device.clone());
-
-        write_state.queue.exec_async(move || {
-            // Force whole-struct capture (edition 2021+ disjoint capture).
+        move || {
             let device = device;
-            let ret = unsafe {
+            check(unsafe {
                 device.0.set_report(
                     report_type,
                     report_id as _,
-                    NonNull::new_unchecked(data.as_ptr() as *mut u8),
+                    NonNull::new_unchecked(data.as_mut_ptr()),
                     data.len() as _,
                 )
-            };
-            inner.ret.store(ret, Ordering::Relaxed);
-            // Release, so the return code above is visible to the acquiring
-            // load in poll. Without it a completed write can be seen before the
-            // code it completed with, and a failure reads as success.
-            inner.done.store(true, Ordering::Release);
-            // The cancelled flag is not consulted. It exists so a C callback
-            // knows to drop the Arc it was handed raw; this block holds an
-            // ordinary one, so signalling a future that is already gone
-            // writes to live memory and wakes nobody.
-            inner.waker.wake();
-        });
-
-        context.await.map(|_| ())
+            })
+        }
     }
 
     /// Common function to read reports from the specified [`IOHIDReportType`]
     /// This is only for Output for Feature type reports.
-    async fn read_report<'a>(&'a self, report_type: IOHIDReportType, buf: &'a mut [u8]) -> HidResult<usize> {
-        #[allow(non_upper_case_globals)]
-        const kIOReturnBadArgument: IOReturn = objc2_io_kit::kIOReturnBadArgument as IOReturn;
-
+    async fn read_report<'a>(
+        &'a self, report_type: IOHIDReportType, buf: &'a mut [u8], pending_read: &'a mut Option<PendingRead>
+    ) -> HidResult<usize> {
         // Should never reach here for report types other that feature or output
         match report_type {
             IOHIDReportType::Feature | IOHIDReportType::Output => {}
@@ -192,30 +263,34 @@ impl DeviceReadWriter {
 
         let _ = self.read_state.as_ref().expect("Device is not readable");
         let report_id = buf[0];
-        let buffer = if report_id == 0x0 { &buf[1..] } else { buf };
+        let target = if report_id == 0x0 { &mut buf[1..] } else { buf };
+        let capacity = target.len();
+        let request = ReportRequest {
+            report_type,
+            report_id,
+            capacity
+        };
 
-        let context = CallbackContext::<usize>::new();
-        let mut length: CFIndex = buffer.len() as _;
+        let device = SendDevice(self.device.clone());
+        let report = read_resumable(pending_read, &self.report_queue, request, move || {
+            let device = device;
+            // Never empty, an empty Vec would hand IOKit a dangling pointer.
+            let mut report = vec![0u8; capacity.max(1)];
+            let mut length = capacity as CFIndex;
+            let ret = unsafe {
+                device.0.report(
+                    report_type,
+                    report_id as _,
+                    NonNull::new_unchecked(report.as_mut_ptr()),
+                    NonNull::new_unchecked(&mut length)
+                )
+            };
+            report_from_native(ret, report, length, capacity)
+        })
+        .await?;
 
-        #[allow(non_upper_case_globals)]
-        match unsafe {
-            self.device.report_with_callback(
-                report_type,
-                report_id as _,
-                NonNull::new_unchecked(buffer.as_ptr() as _),
-                NonNull::new_unchecked(&mut length),
-                250.0,
-                Some(AsyncReaderCallback::read_callback),
-                NonNull::new_unchecked(context.as_raw() as *mut _),
-            )
-        } {
-            kIOReturnSuccess => Ok(()),
-            kIOReturnBadArgument => Err(HidError::Disconnected),
-            other => Err(HidError::message(format!("failed to set report type: {:#X}", other))),
-        }?;
-
-        // Await the context
-        context.await.map(|f| f.unwrap())
+        target[..report.len()].copy_from_slice(&report);
+        Ok(report.len())
     }
 }
 
@@ -230,17 +305,32 @@ impl AsyncHidRead for Arc<DeviceReadWriter> {
 
 impl AsyncHidWrite for Arc<DeviceReadWriter> {
     async fn write_output_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
-        self.write_report(IOHIDReportType::Output, buf).await
+        dispatch(&self.report_queue, self.set_report_job(IOHIDReportType::Output, buf)).await
     }
 }
 
-impl AsyncHidFeatureHandle for Arc<DeviceReadWriter> {
+pub struct FeatureReadWriter {
+    device: DeviceReadWriter,
+    /// A dropped read, taken over by the next matching read.
+    pending_read: Option<PendingRead>
+}
+
+impl FeatureReadWriter {
+    pub fn new(device: DeviceReadWriter) -> Self {
+        Self { device, pending_read: None }
+    }
+}
+
+impl AsyncHidFeatureHandle for FeatureReadWriter {
     async fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
-        self.read_report(IOHIDReportType::Feature, buf).await
+        self.device
+            .read_report(IOHIDReportType::Feature, buf, &mut self.pending_read)
+            .await
     }
 
     async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
-        self.write_report(IOHIDReportType::Feature, buf).await
+        let job = self.device.set_report_job(IOHIDReportType::Feature, buf);
+        dispatch_write(&mut self.pending_read, &self.device.report_queue, job).await
     }
 }
 
@@ -338,38 +428,148 @@ impl AsyncReportReaderInner {
     }
 }
 
-struct AsyncReaderCallback;
-impl AsyncReaderCallback {
-    unsafe extern "C-unwind" fn read_callback(
-        context: *mut c_void, result: IOReturn, _sender: *mut c_void, _report_type: IOHIDReportType, _report_id: u32, _report: NonNull<u8>,
-        report_length: CFIndex,
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::time::Duration;
+
+    use futures_lite::future::{block_on, poll_once};
+
+    use super::*;
+
+    fn report_queue() -> DispatchRetained<DispatchQueue> {
+        DispatchQueue::new("async-hid-report-tests", DispatchQueueAttr::SERIAL)
+    }
+
+    fn wait_for(what: &str, signal: &Receiver<()>) {
+        signal
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
+    /// Blocks the queue until the returned sender is dropped.
+    fn occupy(queue: &DispatchQueue) -> Sender<()> {
+        let (release, wait_for_release) = channel::<()>();
+        let (report_blocked, blocked) = channel::<()>();
+        queue.exec_async(move || {
+            let _ = report_blocked.send(());
+            let _ = wait_for_release.recv();
+        });
+        wait_for("the queue to be occupied", &blocked);
+        release
+    }
+
+    fn request(report_id: u8) -> ReportRequest {
+        ReportRequest {
+            report_type: IOHIDReportType::Feature,
+            report_id,
+            capacity: 8
+        }
+    }
+
+    /// A read dropped after its first poll, like one that lost a race against a timeout.
+    fn abandon(
+        slot: &mut Option<PendingRead>, queue: &DispatchQueue, request: ReportRequest, job: impl Send + FnOnce() -> HidResult<Vec<u8>> + 'static
     ) {
-        let context = CallbackContext::<usize>::inner_from_raw(context);
+        let mut read = Box::pin(read_resumable(slot, queue, request, job));
+        assert!(block_on(poll_once(&mut read)).is_none(), "the read must still be waiting");
+    }
 
-        // Check if the future has been cancelled and return
-        if context.cancelled.load(Ordering::Relaxed) {
-            return;
+    #[test]
+    fn a_job_completing_before_the_first_poll_is_not_a_lost_wakeup() {
+        let queue = report_queue();
+        let (report_done, done) = channel::<()>();
+        let mut job = dispatch(&queue, move || {
+            let _ = report_done.send(());
+            Ok(7)
+        });
+        wait_for("the job", &done);
+        // The next block on the serial queue runs only once the result is stored.
+        drop(occupy(&queue));
+
+        assert!(matches!(block_on(poll_once(&mut job)), Some(Ok(7))));
+    }
+
+    /// A write must reach the device even if its future is gone.
+    #[test]
+    fn a_dropped_future_does_not_stop_its_job() {
+        let queue = report_queue();
+        let blocker = occupy(&queue);
+        let (report_ran, ran) = channel::<()>();
+        let mut job = dispatch(&queue, move || {
+            let _ = report_ran.send(());
+            Ok(())
+        });
+        assert!(block_on(poll_once(&mut job)).is_none());
+        drop(job);
+        drop(blocker);
+
+        wait_for("the job of a dropped future", &ran);
+    }
+
+    #[test]
+    fn a_read_dropped_by_a_timeout_hands_its_report_to_the_next_read() {
+        let queue = report_queue();
+        let mut slot = None;
+        let blocker = occupy(&queue);
+
+        abandon(&mut slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+        abandon(&mut slot, &queue, request(0x05), || panic!("the device was asked twice"));
+        drop(blocker);
+        let report = block_on(read_resumable(&mut slot, &queue, request(0x05), || panic!("the device was asked twice")));
+
+        assert_eq!(report.expect("report"), vec![0x11; 4]);
+        assert!(slot.is_none(), "a delivered report is no longer pending");
+    }
+
+    #[test]
+    fn a_pending_read_for_another_request_is_not_handed_over() {
+        let queue = report_queue();
+        let mut slot = None;
+        let mut other_size = request(0x05);
+        other_size.capacity = 4;
+
+        for other in [request(0x06), other_size] {
+            let blocker = occupy(&queue);
+            abandon(&mut slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+            drop(blocker);
+            let report = block_on(read_resumable(&mut slot, &queue, other, || Ok(vec![0x22; 4])));
+            assert_eq!(report.expect("report"), vec![0x22; 4]);
         }
+    }
 
-        {
-            // Store the report length in the result
-            let Ok(mut guard) = context.result.lock() else {
-                error!("Mutex poisoned");
-                return;
-            };
+    #[test]
+    fn a_write_discards_a_pending_read() {
+        let queue = report_queue();
+        let mut slot = None;
+        let blocker = occupy(&queue);
 
-            *guard = Some(report_length as usize);
+        abandon(&mut slot, &queue, request(0x05), || Ok(vec![0x11; 4]));
+        drop(dispatch_write(&mut slot, &queue, || Ok(())));
+        drop(blocker);
+        let report = block_on(read_resumable(&mut slot, &queue, request(0x05), || Ok(vec![0x22; 4])));
+
+        assert_eq!(report.expect("report"), vec![0x22; 4]);
+    }
+
+    #[test]
+    fn an_impossible_native_length_is_an_error() {
+        for (length, capacity) in [(-1, 16), (CFIndex::MIN, 16), (17, 16), (1, 0)] {
+            let answer = report_from_native(kIOReturnSuccess, vec![0u8; capacity.max(1)], length, capacity);
+            assert!(matches!(answer, Err(HidError::Message(_))), "{length} for {capacity} was accepted");
         }
+        for (length, capacity) in [(16, 16), (4, 16), (0, 16), (0, 0)] {
+            let report = report_from_native(kIOReturnSuccess, vec![0u8; capacity.max(1)], length, capacity);
+            assert_eq!(report.expect("report").len(), length as usize);
+        }
+    }
 
-        // Set the return result
-        context.ret.store(result, Ordering::Relaxed);
-
-        // Mark the callback done. Release for the same reason as in the write
-        // path: it publishes the return code stored just above.
-        context.done.store(true, Ordering::Release);
-
-        context.waker.wake();
-
-        trace!("Read callback {:?}", _report_type);
+    /// Codes measured on a YKUSH3 pulled during a read loop.
+    #[test]
+    fn the_code_a_removed_device_answers_with_is_a_disconnect() {
+        assert!(matches!(check(0xE00002C2u32 as IOReturn), Err(HidError::Disconnected)));
+        for code in [0xE00002EDu32, 0xE00002D8] {
+            assert!(matches!(check(code as IOReturn), Err(HidError::Message(_))));
+        }
     }
 }

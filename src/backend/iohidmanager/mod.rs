@@ -1,4 +1,3 @@
-mod context;
 mod device_info;
 mod read_writer;
 
@@ -21,7 +20,7 @@ use objc2_core_foundation::{CFDictionary, CFRetained};
 use objc2_io_kit::{IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IOObjectRelease, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
 
 use crate::backend::iohidmanager::device_info::{get_device_id, get_device_info};
-use crate::backend::iohidmanager::read_writer::DeviceReadWriter;
+use crate::backend::iohidmanager::read_writer::{DeviceReadWriter, FeatureReadWriter};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
 use crate::{ensure, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
@@ -96,7 +95,7 @@ impl Drop for IoHidManagerBackendInner {
 impl Backend for IoHidManagerBackend {
     type Reader = Arc<DeviceReadWriter>;
     type Writer = Arc<DeviceReadWriter>;
-    type FeatureHandle = Arc<DeviceReadWriter>;
+    type FeatureHandle = FeatureReadWriter;
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let device_infos = unsafe {
@@ -131,8 +130,8 @@ impl Backend for IoHidManagerBackend {
 
     async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
         let device = get_device(id)?;
-        let rw = Arc::new(DeviceReadWriter::new(device, &DISPATCH_QUEUE, true, true)?);
-        Ok(rw)
+        let rw = DeviceReadWriter::new(device, &DISPATCH_QUEUE, true, true)?;
+        Ok(FeatureReadWriter::new(rw))
     }
 }
 
