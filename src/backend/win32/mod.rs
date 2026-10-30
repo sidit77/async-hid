@@ -22,7 +22,7 @@ use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
 use crate::traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
-use crate::{ensure, DeviceEvent, DeviceInfo, HidError};
+use crate::{ensure, Access, DeviceEvent, DeviceInfo, HidError};
 
 #[derive(Default)]
 pub struct Win32Backend;
@@ -50,11 +50,11 @@ impl Backend for Win32Backend {
         Ok(vec![get_device_information(id.clone())?])
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let id = match id {
             DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
         };
-        let device = Arc::new(Device::open(id, read, write)?);
+        let device = Arc::new(Device::open(id, read, write, access)?);
 
         if read {
             check_error(unsafe { HidD_SetNumInputBuffers(device.handle(), 64) })?;
@@ -73,12 +73,13 @@ impl Backend for Win32Backend {
         Ok((read_buffer, write_buffer))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
         let id = match id {
             DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
         };
 
-        let device = Arc::new(Device::open(id, false, false)?);
+        let (read, write) = feature_handle_access(access);
+        let device = Arc::new(Device::open(id, read, write, access)?);
         let caps = device.preparsed_data()?.caps()?;
 
         ensure!(
@@ -91,8 +92,21 @@ impl Backend for Win32Backend {
     }
 }
 
+/// The read and write access a feature handle is opened with.
+///
+/// Feature reports need neither, so a feature handle normally asks for none.
+/// Windows applies no sharing check to such a handle, though, so an exclusive
+/// one would exclude nobody. An exclusive feature handle asks for both to make
+/// its share mode count.
+fn feature_handle_access(access: Option<Access>) -> (bool, bool) {
+    match access {
+        None | Some(Access::Shared) => (false, false),
+        Some(Access::Exclusive) => (true, true)
+    }
+}
+
 fn get_device_information(id: HSTRING) -> HidResult<DeviceInfo> {
-    let device = Device::open(PCWSTR(id.as_ptr()), false, false)?;
+    let device = Device::open(PCWSTR(id.as_ptr()), false, false, None)?;
     let name = device.name()?;
     let manufacturer = device.manufacturer();
     let attribs = device.attributes()?;
@@ -153,5 +167,22 @@ impl From<CONFIGRET> for HidError {
             win32 => HRESULT::from_win32(win32)
         };
         HidError::from(windows::core::Error::from(hresult))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::feature_handle_access;
+    use crate::Access;
+
+    #[test]
+    fn default_and_shared_feature_handles_ask_for_no_access() {
+        assert_eq!(feature_handle_access(None), (false, false));
+        assert_eq!(feature_handle_access(Some(Access::Shared)), (false, false));
+    }
+
+    #[test]
+    fn exclusive_feature_handles_ask_for_read_and_write() {
+        assert_eq!(feature_handle_access(Some(Access::Exclusive)), (true, true));
     }
 }

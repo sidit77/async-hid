@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use futures_lite::stream::{iter, unfold, Boxed};
 use futures_lite::StreamExt;
-use nix::libc::EIO;
+use nix::libc::{EBUSY, EIO};
 use nix::unistd::{read, write};
 
 use crate::backend::freebsdhid::devd::{parse_line, ParsedEvent};
@@ -41,7 +41,7 @@ use crate::backend::freebsdhid::ioctl::{
 };
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
-use crate::{ensure, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::{ensure, Access, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
 
 #[derive(Default)]
 pub struct FreeBsdHidBackend;
@@ -115,7 +115,8 @@ impl Backend for FreeBsdHidBackend {
         get_device_info(path)
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        check_access(access)?;
         let DeviceId::DevPath(path) = id;
 
         let fd: OwnedFd = OpenOptions::new()
@@ -123,10 +124,7 @@ impl Backend for FreeBsdHidBackend {
             .write(write)
             .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
             .open(path)
-            .map_err(|err| match err {
-                err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
-                err => err.into(),
-            })?
+            .map_err(open_error)?
             .into();
 
         // Sanity-check we opened an actual hidraw node.
@@ -138,9 +136,29 @@ impl Backend for FreeBsdHidBackend {
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
-        let (_, writer) = self.open(id, true, true).await?;
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
+        let (_, writer) = self.open(id, true, true, access).await?;
         writer.ok_or(HidError::message("Failed to open device for feature report"))
+    }
+}
+
+/// Rejects the access modes this backend can not provide.
+///
+/// hidraw_open() in sys/dev/hid/hidraw.c fails with EBUSY while the node is
+/// open, so every open is exclusive and a shared one can not be given.
+fn check_access(access: Option<Access>) -> HidResult<()> {
+    match access {
+        None | Some(Access::Exclusive) => Ok(()),
+        Some(Access::Shared) => Err(HidError::Unsupported)
+    }
+}
+
+/// The error for a failed open of a hidraw node.
+fn open_error(err: std::io::Error) -> HidError {
+    match err {
+        err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
+        err if err.raw_os_error() == Some(EBUSY) => HidError::Busy,
+        err => err.into()
     }
 }
 
@@ -169,10 +187,13 @@ fn is_hidraw_node(path: &Path) -> bool {
 }
 
 fn get_device_info(path: &Path) -> HidResult<Vec<DeviceInfo>> {
+    // The node can only be opened once, so a device that is open elsewhere
+    // is reported as busy, the same way an open of it is.
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
-        .open(path)?;
+        .open(path)
+        .map_err(open_error)?;
     let fd = file.as_raw_fd();
 
     let mut info: MaybeUninit<HidrawDeviceInfo> = MaybeUninit::zeroed();
@@ -342,5 +363,41 @@ mod async_api {
 
     pub async fn write_with<R>(inner: &AsyncFd, mut op: impl FnMut(&OwnedFd) -> std::io::Result<R>) -> std::io::Result<R> {
         op(inner.0.get_ref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use nix::libc::{EACCES, EBUSY};
+
+    use super::{check_access, open_error};
+    use crate::{Access, HidError};
+
+    #[test]
+    fn the_default_and_exclusive_access_are_accepted() {
+        assert!(check_access(None).is_ok());
+        assert!(check_access(Some(Access::Exclusive)).is_ok());
+    }
+
+    #[test]
+    fn shared_access_is_unsupported() {
+        assert!(matches!(check_access(Some(Access::Shared)), Err(HidError::Unsupported)));
+    }
+
+    #[test]
+    fn ebusy_is_busy() {
+        assert!(matches!(open_error(Error::from_raw_os_error(EBUSY)), HidError::Busy));
+    }
+
+    #[test]
+    fn a_missing_node_is_not_connected() {
+        assert!(matches!(open_error(Error::from(ErrorKind::NotFound)), HidError::NotConnected));
+    }
+
+    #[test]
+    fn other_errors_are_passed_on() {
+        assert!(matches!(open_error(Error::from_raw_os_error(EACCES)), HidError::Other(_)));
     }
 }
