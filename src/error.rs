@@ -12,12 +12,25 @@ pub type HidResult<T> = Result<T, HidError>;
 /// All mappings from platform specific errors to platform independent error
 /// such as `Disconnected` or `NotConnected` are performed on a best effort basis,
 /// as it is generally poorly documented by platform apis which operations can throw which errors and in what circumstances
+///
+/// The enum is `non_exhaustive`: new variants may be added in minor releases, so a `match` on it
+/// needs a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum HidError {
     /// This error occurs when trying to perform an action on a device which was diconnected after being opened
     Disconnected,
     /// This error occurs when trying to open a device which is no longer connected
     NotConnected,
+    /// This error occurs when the device could not be opened because it is held by another handle,
+    /// for example one that was opened with [Access::Exclusive](crate::Access::Exclusive)
+    /// or, on FreeBSD, any other open handle.
+    /// On macOS it also occurs when a report call on an open handle is refused because another handle,
+    /// in this or another process, seized the device; the handle works again once the seize is released
+    Busy,
+    /// This error occurs when the current backend can not provide what was requested,
+    /// for example an [Access](crate::Access) mode it does not support
+    Unsupported,
     Message(Cow<'static, str>),
     Other(Box<dyn std::error::Error + Send + Sync>)
 }
@@ -41,7 +54,9 @@ impl Display for HidError {
             HidError::Message(msg) => f.write_str(msg),
             HidError::Other(err) => Display::fmt(err, f),
             HidError::Disconnected => f.write_str("The device was disconnected"),
-            HidError::NotConnected => f.write_str("The device is not connected")
+            HidError::NotConnected => f.write_str("The device is not connected"),
+            HidError::Busy => f.write_str("The device is busy"),
+            HidError::Unsupported => f.write_str("The operation is not supported by this backend")
         }
     }
 }

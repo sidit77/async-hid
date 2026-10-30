@@ -23,7 +23,7 @@ use crate::backend::hidraw::ioctl::{hidraw_ioc_get_feature, hidraw_ioc_set_featu
 use crate::backend::hidraw::uevent::{Action, UEvent};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::{ensure, Access, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
 
 #[derive(Default)]
 pub struct HidRawBackend;
@@ -116,7 +116,8 @@ impl Backend for HidRawBackend {
         get_device_info_raw(id.clone())
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        check_access(access)?;
         let DeviceId::DevPath(id) = id;
 
         let properties = read_to_string(id.join("uevent")).map_err(|err| match err {
@@ -147,10 +148,21 @@ impl Backend for HidRawBackend {
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
-        let (_, writer) = self.open(id, true, true).await?;
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
+        let (_, writer) = self.open(id, true, true, access).await?;
         let device = writer.ok_or(HidError::message("Failed to open device for feature report"))?;
         Ok(device)
+    }
+}
+
+/// Rejects the access modes this backend can not provide.
+///
+/// The hidraw driver lets any number of handles open a node and has no
+/// exclusive open. Shared access is what an open always gives.
+fn check_access(access: Option<Access>) -> HidResult<()> {
+    match access {
+        None | Some(Access::Shared) => Ok(()),
+        Some(Access::Exclusive) => Err(HidError::Unsupported)
     }
 }
 
@@ -336,5 +348,22 @@ mod async_api {
 
     pub async fn write_with<R>(inner: &AsyncFd, op: impl FnMut(&OwnedFd) -> std::io::Result<R>) -> std::io::Result<R> {
         inner.async_io(Interest::WRITABLE, op).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_access;
+    use crate::{Access, HidError};
+
+    #[test]
+    fn the_default_and_shared_access_are_accepted() {
+        assert!(check_access(None).is_ok());
+        assert!(check_access(Some(Access::Shared)).is_ok());
+    }
+
+    #[test]
+    fn exclusive_access_is_unsupported() {
+        assert!(matches!(check_access(Some(Access::Exclusive)), Err(HidError::Unsupported)));
     }
 }

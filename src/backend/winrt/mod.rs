@@ -21,7 +21,7 @@ use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResult
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle, DeviceEvent, DeviceInfo, HidError};
+use crate::{ensure, Access, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceInfo, HidError};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -85,7 +85,8 @@ impl Backend for WinRtBackend {
         Ok(get_device_information(info).await?.into_iter().collect())
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        check_access(access)?;
         let mode = access_mode(read, write).expect("Not supported");
         let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, mode)?
@@ -101,7 +102,8 @@ impl Backend for WinRtBackend {
         Ok((input, write.then_some(device)))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
+        check_access(access)?;
         let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, FileAccessMode::ReadWrite)?
             .await
@@ -110,6 +112,18 @@ impl Backend for WinRtBackend {
                 e => e.into()
             })?;
         Ok(device)
+    }
+}
+
+/// Rejects the access modes this backend can not provide.
+///
+/// `HidDevice::FromIdAsync` takes a `FileAccessMode` and nothing about sharing,
+/// and WinRT does not document how it shares the device. Shared access opens
+/// the device the way it always was; exclusive access can not be requested.
+fn check_access(access: Option<Access>) -> HidResult<()> {
+    match access {
+        None | Some(Access::Shared) => Ok(()),
+        Some(Access::Exclusive) => Err(HidError::Unsupported)
     }
 }
 
@@ -383,6 +397,17 @@ impl WinRtBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_default_and_shared_access_are_accepted() {
+        assert!(check_access(None).is_ok());
+        assert!(check_access(Some(Access::Shared)).is_ok());
+    }
+
+    #[test]
+    fn exclusive_access_is_unsupported() {
+        assert!(matches!(check_access(Some(Access::Exclusive)), Err(HidError::Unsupported)));
+    }
 
     #[test]
     fn access_mode_mapping() {

@@ -8,7 +8,7 @@ use static_assertions::assert_impl_all;
 
 use crate::backend::{Backend, BackendType, DynBackend};
 use crate::device::DeviceFeatureHandle;
-use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
+use crate::{Access, DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult, OpenOptions};
 
 /// A platform-specific identifier for a device.
 ///
@@ -157,33 +157,103 @@ impl Device {
         self.device_info
     }
 
-    /// Open the device in read-only mode
+    /// Open the device in read-only mode, with the platform default [Access](crate::Access)
     pub async fn open_readable(&self) -> HidResult<DeviceReader> {
-        let (r, _) = self.backend.open(&self.id, true, false).await?;
+        self.open_readable_with(None).await
+    }
+
+    /// Open the device in write-only mode, with the platform default [Access](crate::Access)
+    /// Note: Not all backends support this mode and might upgrade the permission to read+write behind the scenes
+    pub async fn open_writeable(&self) -> HidResult<DeviceWriter> {
+        self.open_writeable_with(None).await
+    }
+
+    /// Open the device in read and write mode, with the platform default [Access](crate::Access)
+    pub async fn open(&self) -> HidResult<DeviceReaderWriter> {
+        self.open_with(None).await
+    }
+
+    /// Open a handle for reading and writing feature reports, with the platform default [Access](crate::Access)
+    pub async fn open_feature_handle(&self) -> HidResult<DeviceFeatureHandle> {
+        self.open_feature_handle_with(None).await
+    }
+
+    /// Configure how the device is opened, for example with an explicit [Access](crate::Access) mode.
+    ///
+    /// See [OpenOptions] for an example.
+    pub fn open_options(&self) -> OpenOptions<'_> {
+        OpenOptions::new(self)
+    }
+
+    pub(crate) async fn open_readable_with(&self, access: Option<Access>) -> HidResult<DeviceReader> {
+        let (r, _) = self.backend.open(&self.id, true, false, access).await?;
         Ok(DeviceReader(r.unwrap()))
     }
 
-    /// Open the device in write-only mode
-    /// Note: Not all backends support this mode and might upgrade the permission to read+write behind the scenes
-    pub async fn open_writeable(&self) -> HidResult<DeviceWriter> {
-        let (_, w) = self.backend.open(&self.id, false, true).await?;
+    pub(crate) async fn open_writeable_with(&self, access: Option<Access>) -> HidResult<DeviceWriter> {
+        let (_, w) = self.backend.open(&self.id, false, true, access).await?;
         Ok(DeviceWriter(w.unwrap()))
     }
 
-    /// Open the device in read and write mode
-    pub async fn open(&self) -> HidResult<DeviceReaderWriter> {
-        let (r, w) = self.backend.open(&self.id, true, true).await?;
+    pub(crate) async fn open_with(&self, access: Option<Access>) -> HidResult<DeviceReaderWriter> {
+        let (r, w) = self.backend.open(&self.id, true, true, access).await?;
         Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
     }
 
-    /// Open the device in read and write mode
-    pub async fn open_feature_handle(&self) -> HidResult<DeviceFeatureHandle> {
-        let r = self.backend.open_feature_handle(&self.id).await?;
+    pub(crate) async fn open_feature_handle_with(&self, access: Option<Access>) -> HidResult<DeviceFeatureHandle> {
+        let r = self.backend.open_feature_handle(&self.id, access).await?;
         Ok(DeviceFeatureHandle(r))
     }
 
     /// Read a feature report from the device
     pub async fn read_feature_report(&self, buf: &mut [u8]) -> HidResult<usize> {
         self.backend.read_feature_report(&self.id, buf).await
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{Access, HidError};
+
+    /// A device whose node does not exist. The access check comes before any
+    /// file system access, so an unsupported mode is reported as such rather
+    /// than as a missing device.
+    fn absent_device() -> Device {
+        Device {
+            backend: Arc::new(DynBackend::default()),
+            device_info: DeviceInfo {
+                id: DeviceId::DevPath(PathBuf::from("/nonexistent/hidraw")),
+                name: String::new(),
+                manufacturer: None,
+                product_id: 0,
+                vendor_id: 0,
+                usage_id: 0,
+                usage_page: 0,
+                serial_number: None
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    const UNSUPPORTED: Access = Access::Exclusive;
+    #[cfg(target_os = "freebsd")]
+    const UNSUPPORTED: Access = Access::Shared;
+
+    #[test]
+    fn every_open_method_rejects_the_unsupported_access() {
+        let device = absent_device();
+        let mut options = device.open_options();
+        options.access(UNSUPPORTED);
+
+        pollster::block_on(async {
+            assert!(matches!(options.open().await, Err(HidError::Unsupported)));
+            assert!(matches!(options.open_readable().await, Err(HidError::Unsupported)));
+            assert!(matches!(options.open_writeable().await, Err(HidError::Unsupported)));
+            assert!(matches!(options.open_feature_handle().await, Err(HidError::Unsupported)));
+        });
     }
 }

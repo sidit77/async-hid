@@ -20,10 +20,10 @@ use objc2_core_foundation::{CFDictionary, CFRetained};
 use objc2_io_kit::{IOHIDDevice, IOHIDManager, IOHIDManagerOptions, IOObjectRelease, IORegistryEntryIDMatching, IOReturn, IOServiceGetMatchingService};
 
 use crate::backend::iohidmanager::device_info::{get_device_id, get_device_info};
-use crate::backend::iohidmanager::read_writer::{DeviceReadWriter, FeatureReadWriter};
+use crate::backend::iohidmanager::read_writer::{open_options, DeviceReadWriter, FeatureReadWriter};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
-use crate::{ensure, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::{ensure, Access, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
 
 static DISPATCH_QUEUE: LazyLock<DispatchRetained<DispatchQueue>> = LazyLock::new(|| DispatchQueue::new("async-hid", DispatchQueueAttr::SERIAL));
 
@@ -122,15 +122,15 @@ impl Backend for IoHidManagerBackend {
         Ok(device_info)
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let device = get_device(id)?;
-        let rw = Arc::new(DeviceReadWriter::new(device, &DISPATCH_QUEUE, read, write)?);
+        let rw = Arc::new(DeviceReadWriter::new(device, &DISPATCH_QUEUE, read, write, open_options(access))?);
         Ok((read.then_some(rw.clone()), write.then_some(rw)))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
         let device = get_device(id)?;
-        let rw = DeviceReadWriter::new(device, &DISPATCH_QUEUE, true, true)?;
+        let rw = DeviceReadWriter::new(device, &DISPATCH_QUEUE, true, true, open_options(access))?;
         Ok(FeatureReadWriter::new(rw))
     }
 }
