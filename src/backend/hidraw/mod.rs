@@ -254,7 +254,7 @@ pub struct HidDevice(Arc<AsyncFd>);
 
 impl AsyncHidRead for HidDevice {
     async fn read_input_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
-        read_with(&self.0, |fd| read(fd.as_raw_fd(), buf).map_err(std::io::Error::from))
+        read_with(&self.0, |fd| read(fd, buf).map_err(std::io::Error::from))
             .await
             .map_err(|err| match err {
                 err if err.raw_os_error() == Some(EIO) => HidError::Disconnected,

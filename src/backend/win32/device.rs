@@ -77,7 +77,7 @@ impl Device {
 
     pub fn name(&self) -> HidResult<String> {
         self.read_string(HidD_GetProductString)
-            .ok_or_else(|| windows::core::Error::from_win32().into())
+            .ok_or_else(|| windows::core::Error::from_thread().into())
     }
 
     pub fn manufacturer(&self) -> Option<String> {

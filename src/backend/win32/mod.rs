@@ -140,7 +140,7 @@ pub fn check_error(result: bool) -> windows::core::Result<()> {
     if result {
         Ok(())
     } else {
-        Err(windows::core::Error::from_win32())
+        Err(windows::core::Error::from_thread())
     }
 }
 

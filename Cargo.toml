@@ -1,6 +1,6 @@
 [package]
 name = "async-hid"
-version = "0.5.3"
+version = "0.6.0"
 authors = [ "sidit77" ]
 repository = "https://github.com/sidit77/async-hid"
 description = "A async library for interacting with HID devices"
@@ -19,16 +19,16 @@ winrt = ["dep:windows-future", "dep:once_cell", "dep:async-channel"]
 
 [dependencies]
 log = "0.4"
-futures-lite = "2.5"
+futures-lite = "2.6"
 static_assertions = "1.1"
 
 [target."cfg(target_os = \"windows\")".dependencies]
-async-channel = { version = "2.3.1", optional = true }
-once_cell = { version = "1.21.3", optional = true }
+async-channel = { version = "2.5.0", optional = true }
+once_cell = { version = "1.21.4", optional = true }
 atomic-waker = { version = "1.1.2", optional = true }
-crossbeam-queue = { version = "0.3.12", optional = true }
-windows-future = { version = "0.2.0", optional = true }
-windows = { version = "0.61.1", features = [
+crossbeam-queue = { version = "0.3.14", optional = true }
+windows-future = { version = "0.100.0", optional = true }
+windows = { version = "0.62.2", features = [
     "Devices_Enumeration",
     "Devices_HumanInterfaceDevice",
     "Foundation",
@@ -49,23 +49,22 @@ windows = { version = "0.61.1", features = [
 [target."cfg(target_os = \"linux\")".dependencies]
 tokio = { version = "1", features = ["net"], optional = true }
 async-io = { version = "2", optional = true }
-nix = { version = "0.29.0", features = ["fs", "ioctl", "socket"] }
+nix = { version = "0.31.3", features = ["fs", "ioctl", "socket"] }
 
 [target."cfg(target_os = \"freebsd\")".dependencies]
 tokio = { version = "1", features = ["net"], optional = true }
 async-io = { version = "2", optional = true }
-nix = { version = "0.29.0", features = ["fs", "ioctl", "socket"] }
+nix = { version = "0.31.3", features = ["fs", "ioctl", "socket"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
 objc2-io-kit = "0.3.2"
 objc2-core-foundation = "0.3.2"
-dispatch2 = "0.3.0"
-block2 = "0.6.1"
+dispatch2 = "0.3.1"
+block2 = "0.6.2"
 atomic-waker = "1.1.2"
-crossbeam-queue = "0.3.12"
+crossbeam-queue = "0.3.14"
 
 [dev-dependencies]
 simple_logger = "5"
-futures-lite = "2.5.0"
-pollster = { version = "0.4.0", features = ["macro"] }
-async-io = "2.4.0"
+pollster = { version = "1", features = ["macro"] }
+async-io = "2.6.0"
