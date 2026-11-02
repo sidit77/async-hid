@@ -1,14 +1,15 @@
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use log::{debug, error, trace, warn};
 use windows::core::HRESULT;
-use windows::Win32::Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_FOUND};
+use windows::Win32::Foundation::{CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_NOT_FOUND, STATUS_PENDING};
 use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
 use windows::Win32::System::Threading::CreateEventW;
-use windows::Win32::System::IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED};
+use windows::Win32::System::IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED};
 
 use crate::backend::win32::device::Device;
 use crate::backend::win32::waiter::HandleWaiter;
@@ -106,14 +107,63 @@ impl<T> IoBuffer<T> {
     }
 }
 
+/// How long dropping a handle waits for a canceled operation to complete.
+/// After that the buffer is leaked, so that a driver that does not honor the
+/// cancellation can not block the dropping thread indefinitely.
+const CANCEL_TIMEOUT_MS: u32 = 1000;
+
+impl<T> IoBuffer<T> {
+    /// Cancels the pending operation and waits until it has completed, for
+    /// at most [CANCEL_TIMEOUT_MS].
+    ///
+    /// `CancelIoEx` only requests the cancellation. The buffer and the
+    /// OVERLAPPED of the operation must stay valid until it has completed,
+    /// normally or canceled. Returns `false` if the completion could not be
+    /// confirmed, in which case the operation stays marked as pending.
+    fn cancel_and_wait(&mut self) -> bool {
+        trace!("Canceling pending I/O operation");
+        // A future that was leaked instead of dropped leaves its wait on the
+        // auto-reset event registered, and that wait could take the signal
+        // that the wait below needs.
+        if let Err(err) = self.overlapped.cancel_wait() {
+            error!("Failed to unregister the wait of the pending I/O operation: {err}");
+            return false;
+        }
+        if let Err(err) = self.cancel_io() {
+            error!("Failed to cancel I/O operation: {err}");
+            return false;
+        }
+        // GetOverlappedResultEx with a timeout was seen to wait for the event
+        // although the operation had completed (Windows 11 ARM64, build
+        // 26300), and the signal of the auto-reset event may already be gone,
+        // taken by the wait of a future that was dropped meanwhile.
+        if self.overlapped.is_pending() {
+            // A timeout is no error by itself: whether the operation has
+            // completed is decided by is_pending below.
+            let mut bytes_transferred = 0;
+            let result = unsafe {
+                GetOverlappedResultEx(
+                    self.device.handle(),
+                    self.overlapped.as_raw(),
+                    &mut bytes_transferred,
+                    CANCEL_TIMEOUT_MS,
+                    false
+                )
+            };
+            trace!("Waited for the canceled I/O operation: {result:?}");
+        }
+        self.pending = self.overlapped.is_pending();
+        !self.pending
+    }
+}
+
 impl<T> Drop for IoBuffer<T> {
     fn drop(&mut self) {
-        if self.pending {
-            trace!("Canceling pending I/O operation");
-            // SAFETY: If canceling the I/O operation fails, the buffer and overlapped structures are leaked before we panic to make sure they stay valid even after `Self` gets freed.
-            if let Err(err) = self.cancel_io() {
-                panic!("Failed to cancel I/O operation: {:?}", err);
-            }
+        if self.pending && !self.cancel_and_wait() {
+            // The operation may still write to the buffer and the OVERLAPPED,
+            // so both are leaked to keep them valid.
+            error!("Leaking the buffer of an I/O operation that did not complete");
+            return;
         }
         // SAFETY: Without a pending operation nothing but `self` refers to the
         // buffer and the OVERLAPPED, and neither is used after this.
@@ -303,6 +353,21 @@ impl Overlapped {
     pub fn as_raw_mut(&mut self) -> *mut OVERLAPPED {
         self.inner
     }
+
+    /// Whether the operation that last used this OVERLAPPED is still in
+    /// progress, as tested by the `HasOverlappedIoCompleted` macro.
+    pub fn is_pending(&self) -> bool {
+        // SAFETY: `inner` is a live, aligned allocation owned by `self`. The
+        // system writes `Internal` when the operation completes, so it is read
+        // atomically. As in the macro, only the low 32 bits hold the status.
+        let internal = unsafe { AtomicUsize::from_ptr(std::ptr::addr_of_mut!((*self.inner).Internal)) }.load(Ordering::Acquire);
+        internal as u32 == STATUS_PENDING.0 as u32
+    }
+
+    /// Removes a wait on the event that a leaked future left registered.
+    pub fn cancel_wait(&mut self) -> HidResult<()> {
+        self.waiter.cancel()
+    }
 }
 
 unsafe impl Send for Overlapped {}
@@ -311,6 +376,11 @@ unsafe impl Sync for Overlapped {}
 impl Drop for Overlapped {
     fn drop(&mut self) {
         let inner = unsafe { Box::from_raw(self.inner) };
+        // The event must not be closed while a wait on it is registered.
+        if let Err(err) = self.waiter.cancel() {
+            warn!("Leaking the event of a wait that could not be unregistered: {err}");
+            return;
+        }
         unsafe { CloseHandle(inner.hEvent).unwrap_or_else(|err| warn!("Failed to close handle: {err}")) };
     }
 }
@@ -320,8 +390,12 @@ mod tests {
     use std::fs::{remove_file, File};
     use std::path::PathBuf;
 
+    use futures_lite::future::{block_on, poll_once};
     use windows::core::{HSTRING, PCWSTR};
-    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+    use windows::Win32::Foundation::WAIT_OBJECT_0;
+    use windows::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX};
+    use windows::Win32::System::Pipes::{CreateNamedPipeW, PIPE_TYPE_BYTE};
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount, WaitForSingleObject};
 
     use super::*;
 
@@ -354,6 +428,59 @@ mod tests {
         let _ = remove_file(&path);
         // Every buffer owns one event handle, so a leak grows the count by BUFFERS.
         assert!(after - before < BUFFERS / 2, "handle count grew from {before} to {after}");
+    }
+
+    /// A read from a named pipe that nobody writes to stays pending. The
+    /// cancellation of such a read usually completes at once, so this checks
+    /// what cancel_and_wait reports and leaves behind rather than the wait.
+    #[test]
+    fn cancel_and_wait_returns_once_the_read_has_completed() {
+        let name = HSTRING::from(format!(r"\\.\pipe\async-hid-pending-read-{}", std::process::id()));
+        let server = unsafe { CreateNamedPipeW(&name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, PIPE_TYPE_BYTE, 1, 64, 64, 0, None) };
+        assert!(!server.is_invalid(), "Failed to create the pipe");
+        let device = Arc::new(Device::open(PCWSTR(name.as_ptr()), true, true).expect("Failed to open the pipe"));
+        let mut buffer = IoBuffer::<Readable>::new(device, 16).expect("Failed to create the buffer");
+
+        let mut report = [0u8; 16];
+        assert!(block_on(poll_once(buffer.read(&mut report))).is_none(), "the read must be pending");
+        assert!(buffer.pending && buffer.overlapped.is_pending());
+
+        assert!(buffer.cancel_and_wait(), "the canceled read must have completed");
+        assert!(!buffer.pending && !buffer.overlapped.is_pending());
+
+        drop(buffer);
+        unsafe { CloseHandle(server) }.expect("Failed to close the pipe");
+    }
+
+    /// A read that completed while its future was being dropped: the thread
+    /// pool wait took the signal of the auto-reset event, but nobody fetched
+    /// the result. Dropping the buffer must not wait for that signal again.
+    #[test]
+    fn cancel_and_wait_does_not_wait_for_a_completed_read() {
+        let name = HSTRING::from(format!(r"\\.\pipe\async-hid-completed-read-{}", std::process::id()));
+        let server = unsafe { CreateNamedPipeW(&name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE, 1, 64, 64, 0, None) };
+        assert!(!server.is_invalid(), "Failed to create the pipe");
+        let device = Arc::new(Device::open(PCWSTR(name.as_ptr()), true, true).expect("Failed to open the pipe"));
+        let mut buffer = IoBuffer::<Readable>::new(device, 16).expect("Failed to create the buffer");
+
+        let mut report = [0u8; 16];
+        assert!(block_on(poll_once(buffer.read(&mut report))).is_none(), "the read must be pending");
+        let mut written = 0;
+        unsafe { WriteFile(server, Some(&[0x01, 0x02]), Some(&mut written), None) }.expect("Failed to write to the pipe");
+        let event = unsafe { (*buffer.overlapped.as_raw()).hEvent };
+        assert_eq!(unsafe { WaitForSingleObject(event, 1000) }, WAIT_OBJECT_0, "the read must complete");
+        assert!(buffer.pending && !buffer.overlapped.is_pending());
+
+        let started = std::time::Instant::now();
+        assert!(buffer.cancel_and_wait(), "the read has completed");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "waited {:?}",
+            started.elapsed()
+        );
+
+        drop(buffer);
+        unsafe { CloseHandle(server) }.expect("Failed to close the pipe");
     }
 }
 

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 
 use atomic_waker::AtomicWaker;
-use log::{trace, warn};
+use log::{error, trace, warn};
 use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Threading::{RegisterWaitForSingleObject, UnregisterWaitEx, INFINITE, WT_EXECUTEINWAITTHREAD, WT_EXECUTEONLYONCE};
 
@@ -79,6 +79,15 @@ impl HandleWaiter {
         Ok(())
     }
 
+    /// Removes a wait that a future left registered, for example one that
+    /// was leaked instead of dropped. Afterwards nothing waits on the handle.
+    pub fn cancel(&mut self) -> HidResult<()> {
+        if self.is_registered() {
+            self.unregister()?;
+        }
+        Ok(())
+    }
+
     fn reset(&mut self) -> HidResult<()> {
         if self.is_registered() {
             warn!("Waiter was not unregistered correctly in the previous call");
@@ -100,9 +109,12 @@ impl HandleWaiter {
 
 impl Drop for HandleWaiter {
     fn drop(&mut self) {
-        if self.is_registered() {
-            self.unregister()
-                .expect("Failed to unregister waitable handle");
+        if self.is_registered()
+            && let Err(err) = self.unregister()
+        {
+            // The callback of the wait may still use `inner`, so it is leaked.
+            error!("Leaking the state of a wait that could not be unregistered: {err}");
+            return;
         }
         // SAFETY: Calling unregister removes all external references to self.inner
         drop(unsafe { Box::from_raw(self.inner as *mut WaitableHandleFutureInner) });
