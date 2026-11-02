@@ -1,5 +1,4 @@
 use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -15,21 +14,34 @@ use crate::backend::win32::device::Device;
 use crate::backend::win32::waiter::HandleWaiter;
 use crate::HidResult;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Readable;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Writable;
 
-#[derive(Debug)]
-pub struct Feature;
+/// Feature reads and writes share one buffer and one OVERLAPPED, so the
+/// handle remembers which kind of operation is pending.
+#[derive(Debug, Default)]
+pub struct Feature {
+    /// The report ID of the pending read, `None` while a write is pending.
+    pending_read: Option<u8>
+}
+
+impl Feature {
+    /// Whether a read of `report_id` may take over the result of the
+    /// operation that a dropped call left pending.
+    fn can_take_over(&self, report_id: u8) -> bool {
+        self.pending_read == Some(report_id)
+    }
+}
 
 pub struct IoBuffer<T> {
     device: Arc<Device>,
     buffer: ManuallyDrop<Box<[u8]>>,
     overlapped: ManuallyDrop<Overlapped>,
     pending: bool,
-    _marker: PhantomData<T>
+    state: T
 }
 
 impl<T> Debug for IoBuffer<T> {
@@ -40,7 +52,7 @@ impl<T> Debug for IoBuffer<T> {
     }
 }
 
-impl<T> IoBuffer<T> {
+impl<T: Default> IoBuffer<T> {
     pub fn new(device: Arc<Device>, size: usize) -> HidResult<Self> {
         let overlapped = Overlapped::new()?;
         let buffer = vec![0; size].into_boxed_slice();
@@ -49,10 +61,12 @@ impl<T> IoBuffer<T> {
             buffer: ManuallyDrop::new(buffer),
             overlapped: ManuallyDrop::new(overlapped),
             pending: false,
-            _marker: PhantomData
+            state: T::default()
         })
     }
+}
 
+impl<T> IoBuffer<T> {
     async fn wait_for_write_to_complete(&mut self) -> HidResult<()> {
         if self.pending {
             loop {
@@ -262,6 +276,7 @@ const IOCTL_HID_SET_FEATURE: u32 = 0x000B0191;
 impl IoBuffer<Feature> {
     fn start_feature_read(&mut self, report_id: u8) -> HidResult<()> {
         self.buffer[0] = report_id;
+        self.state.pending_read = Some(report_id);
         self.start_io(|device, buffer, overlapped| unsafe {
             trace!("Starting feature read for report ID {}", report_id);
             DeviceIoControl(
@@ -278,6 +293,7 @@ impl IoBuffer<Feature> {
     }
 
     fn start_feature_write(&mut self) -> HidResult<()> {
+        self.state.pending_read = None;
         self.start_io(|device, buffer, overlapped| unsafe {
             trace!("Starting feature write operation");
             DeviceIoControl(
@@ -295,6 +311,13 @@ impl IoBuffer<Feature> {
 
     pub async fn read_feature_report(&mut self, buf: &mut [u8]) -> HidResult<usize> {
         let report_id = buf[0];
+
+        // A read of the same report takes over the result of a read that a
+        // dropped call left pending. Any other pending operation is finished
+        // first and its result discarded.
+        if self.pending && !self.state.can_take_over(report_id) {
+            self.finish_abandoned().await?;
+        }
 
         loop {
             match self.pending {
@@ -491,6 +514,20 @@ mod tests {
 
         drop(buffer);
         unsafe { CloseHandle(server) }.expect("Failed to close the pipe");
+    }
+
+    #[test]
+    fn only_a_read_of_the_same_report_takes_over_a_pending_read() {
+        let feature = Feature { pending_read: Some(0x05) };
+        assert!(feature.can_take_over(0x05));
+        assert!(!feature.can_take_over(0x06));
+    }
+
+    #[test]
+    fn no_read_takes_over_a_pending_write() {
+        let feature = Feature { pending_read: None };
+        assert!(!feature.can_take_over(0x00));
+        assert!(!feature.can_take_over(0x05));
     }
 }
 
