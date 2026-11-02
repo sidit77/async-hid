@@ -99,7 +99,10 @@ impl Backend for IoHidManagerBackend {
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
         let device_infos = unsafe {
-            let device_set = self.manager.devices().expect("Failed to get devices");
+            // IOHIDManagerCopyDevices returns NULL until the manager has seen a device.
+            let Some(device_set) = self.manager.devices() else {
+                return Ok(iter(Vec::<HidResult<DeviceInfo>>::new()).boxed());
+            };
             let mut devices: Vec<NonNull<IOHIDDevice>> = vec![NonNull::dangling(); device_set.count() as usize];
             device_set.values(devices.as_mut_ptr().cast());
             devices
