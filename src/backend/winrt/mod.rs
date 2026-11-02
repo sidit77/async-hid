@@ -194,12 +194,19 @@ impl AsyncHidRead for InputReceiver {
         let buffer = report.Data()?;
         let buffer = buffer.as_slice()?;
         ensure!(!buffer.is_empty(), HidError::message("Input report is empty"));
-        let size = buf.len().min(buffer.len());
-        let start = if buffer[0] == 0x0 { 1 } else { 0 };
-        buf[..(size - start)].copy_from_slice(&buffer[start..size]);
-
-        Ok(size - start)
+        Ok(copy_input_report(buffer, buf))
     }
+}
+
+/// Copies a report without its leading zero report ID; returns the length.
+fn copy_input_report(report: &[u8], buf: &mut [u8]) -> usize {
+    let data = match report {
+        [0x0, rest @ ..] => rest,
+        data => data
+    };
+    let size = buf.len().min(data.len());
+    buf[..size].copy_from_slice(&data[..size]);
+    size
 }
 
 impl AsyncHidWrite for HidDevice {
@@ -390,5 +397,19 @@ mod tests {
         assert_eq!(access_mode(false, true), Some(FileAccessMode::ReadWrite));
         assert_eq!(access_mode(true, true), Some(FileAccessMode::ReadWrite));
         assert_eq!(access_mode(false, false), None);
+    }
+
+    #[test]
+    fn a_report_without_id_fills_a_buffer_of_its_length() {
+        let mut buf = [0u8; 3];
+        assert_eq!(copy_input_report(&[0x00, 0x01, 0x02, 0x03], &mut buf), 3);
+        assert_eq!(buf, [0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn a_report_is_truncated_to_the_buffer() {
+        let mut buf = [0u8; 2];
+        assert_eq!(copy_input_report(&[0x05, 0x01, 0x02], &mut buf), 2);
+        assert_eq!(buf, [0x05, 0x01]);
     }
 }
