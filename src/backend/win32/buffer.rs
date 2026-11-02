@@ -68,6 +68,20 @@ impl<T> IoBuffer<T> {
         Ok(())
     }
 
+    /// Waits for an operation that a dropped call left pending and discards
+    /// its result. Fails only if the operation may still be running, because
+    /// its buffer can not be reused then.
+    async fn finish_abandoned(&mut self) -> HidResult<()> {
+        match self.wait_for_write_to_complete().await {
+            Err(err) if self.pending => Err(err),
+            Err(err) => {
+                error!("Abandoned I/O operation failed: {err}");
+                Ok(())
+            }
+            Ok(()) => Ok(())
+        }
+    }
+
     fn start_io<F>(&mut self, operation: F) -> HidResult<()>
     where
         F: FnOnce(&Device, &mut [u8], &mut Overlapped) -> windows::core::Result<()>
@@ -221,9 +235,7 @@ impl IoBuffer<Writable> {
     }
 
     pub async fn write(&mut self, data: &[u8]) -> HidResult<()> {
-        self.wait_for_write_to_complete()
-            .await
-            .unwrap_or_else(|err| error!("Abandoned write failed: {err}"));
+        self.finish_abandoned().await?;
 
         trace!("Filling write buffer with data");
         let mut data_size = data.len();
@@ -302,9 +314,7 @@ impl IoBuffer<Feature> {
     }
 
     pub async fn write_feature_report(&mut self, buf: &[u8]) -> HidResult<()> {
-        self.wait_for_write_to_complete()
-            .await
-            .unwrap_or_else(|err| error!("Abandoned feature write failed: {err}"));
+        self.finish_abandoned().await?;
 
         trace!("Filling feature write buffer with data");
         let mut data_size = buf.len();
