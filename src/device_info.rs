@@ -184,6 +184,7 @@ impl Device {
 
     /// Read a feature report from the device
     pub async fn read_feature_report(&self, buf: &mut [u8]) -> HidResult<usize> {
+        crate::device::ensure_not_empty(buf)?;
         self.backend.read_feature_report(&self.id, buf).await
     }
 }
