@@ -183,7 +183,7 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
         serial_number
     };
 
-    let results = HidrawReportDescriptor::from_syspath(&path)
+    let results: Vec<DeviceInfo> = HidrawReportDescriptor::from_syspath(&path)
         .map(|descriptor| {
             descriptor
                 .usages()
@@ -194,7 +194,12 @@ fn get_device_info_raw(path: PathBuf) -> HidResult<Vec<DeviceInfo>> {
                 })
                 .collect()
         })
-        .unwrap_or_else(|_| vec![info]);
+        .unwrap_or_default();
+    // The device exists even if its descriptor names no usage, so it is
+    // reported without one, as when the descriptor can not be read.
+    if results.is_empty() {
+        return Ok(vec![info]);
+    }
     Ok(results)
 }
 
