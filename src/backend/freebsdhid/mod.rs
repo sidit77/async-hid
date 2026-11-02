@@ -268,7 +268,8 @@ impl AsyncHidFeatureHandle for HidDevice {
         .await
         .map_err(|e| HidError::message(format!("ioctl(GFEATURE) error: {}", e)))?;
 
-        Ok(result as usize)
+        // Before 14.3 success returns 0; usbhid then filled the whole buffer.
+        Ok(if result == 0 { buf.len() } else { result as usize })
     }
 
     async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
