@@ -1,5 +1,7 @@
 mod buffer;
 mod device;
+#[cfg(test)]
+mod device_tests;
 mod interface;
 mod string;
 mod waiter;
