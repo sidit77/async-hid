@@ -119,7 +119,8 @@ impl Backend for FreeBsdHidBackend {
         let DeviceId::DevPath(path) = id;
 
         let fd: OwnedFd = OpenOptions::new()
-            .read(read)
+            // tokio needs a readable node; hidraw(4) starts input on every open anyway.
+            .read(read || cfg!(feature = "tokio"))
             .write(write)
             .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
             .open(path)
