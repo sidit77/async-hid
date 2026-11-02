@@ -1,5 +1,7 @@
 mod descriptor;
 mod ioctl;
+#[cfg(test)]
+mod sysfs_tests;
 mod uevent;
 
 use std::fs::{read_dir, read_to_string, OpenOptions};
@@ -34,11 +36,7 @@ impl Backend for HidRawBackend {
     type FeatureHandle = HidDevice;
 
     async fn enumerate(&self) -> HidResult<DeviceInfoStream> {
-        let devices = read_dir("/sys/class/hidraw/")?
-            .map(|r| r.map(|e| e.path()).and_then(|p| p.canonicalize()))
-            .try_collect_vec()?;
-        let devices = devices.into_iter().map(get_device_info_raw).try_flatten();
-        Ok(iter(devices).boxed())
+        Ok(iter(enumerate_class_dir(Path::new("/sys/class/hidraw/"))?).boxed())
     }
 
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
@@ -246,6 +244,21 @@ fn find_manufacturer_string(hidraw_path: &Path) -> Option<String> {
             return None;
         }
     }
+}
+
+/// The devices of a sysfs class directory such as /sys/class/hidraw.
+///
+/// An entry that can not be read, for example because its device was
+/// removed while the directory was being read, becomes an error item for
+/// that device instead of failing the whole enumeration.
+fn enumerate_class_dir(dir: &Path) -> HidResult<impl Iterator<Item = HidResult<DeviceInfo>> + Send + 'static> {
+    let devices = read_dir(dir)?
+        .map(|r| r.and_then(|e| e.path().canonicalize()))
+        .collect::<Vec<_>>();
+    Ok(devices
+        .into_iter()
+        .map(|r| r.map_err(HidError::from).and_then(get_device_info_raw))
+        .try_flatten())
 }
 
 #[derive(Debug, Clone)]
