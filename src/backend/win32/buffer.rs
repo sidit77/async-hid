@@ -113,12 +113,13 @@ impl<T> Drop for IoBuffer<T> {
             // SAFETY: If canceling the I/O operation fails, the buffer and overlapped structures are leaked before we panic to make sure they stay valid even after `Self` gets freed.
             if let Err(err) = self.cancel_io() {
                 panic!("Failed to cancel I/O operation: {:?}", err);
-            } else {
-                unsafe {
-                    ManuallyDrop::drop(&mut self.buffer);
-                    ManuallyDrop::drop(&mut self.overlapped);
-                }
             }
+        }
+        // SAFETY: Without a pending operation nothing but `self` refers to the
+        // buffer and the OVERLAPPED, and neither is used after this.
+        unsafe {
+            ManuallyDrop::drop(&mut self.buffer);
+            ManuallyDrop::drop(&mut self.overlapped);
         }
     }
 }
@@ -311,6 +312,48 @@ impl Drop for Overlapped {
     fn drop(&mut self) {
         let inner = unsafe { Box::from_raw(self.inner) };
         unsafe { CloseHandle(inner.hEvent).unwrap_or_else(|err| warn!("Failed to close handle: {err}")) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::{remove_file, File};
+    use std::path::PathBuf;
+
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+    use super::*;
+
+    fn handle_count() -> i64 {
+        let mut count = 0;
+        unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) }.expect("Failed to get the handle count");
+        count.into()
+    }
+
+    /// A plain file opened the way a HID device is opened, with FILE_FLAG_OVERLAPPED.
+    fn file_device(path: &PathBuf) -> Arc<Device> {
+        File::create(path).expect("Failed to create the test file");
+        let path = HSTRING::from(path.as_path());
+        Arc::new(Device::open(PCWSTR(path.as_ptr()), true, true).expect("Failed to open the test file"))
+    }
+
+    #[test]
+    fn dropping_an_idle_buffer_releases_its_event() {
+        const BUFFERS: i64 = 64;
+        let path = std::env::temp_dir().join(format!("async-hid-idle-buffer-{}", std::process::id()));
+        let device = file_device(&path);
+
+        let before = handle_count();
+        for _ in 0..BUFFERS {
+            drop(IoBuffer::<Readable>::new(device.clone(), 16).expect("Failed to create the buffer"));
+        }
+        let after = handle_count();
+
+        drop(device);
+        let _ = remove_file(&path);
+        // Every buffer owns one event handle, so a leak grows the count by BUFFERS.
+        assert!(after - before < BUFFERS / 2, "handle count grew from {before} to {after}");
     }
 }
 
