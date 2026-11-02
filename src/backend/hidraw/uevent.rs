@@ -34,6 +34,7 @@ impl<'a> UEvent<'a> {
                 + 1
         };
 
+        ensure!(offset <= event.len(), "Message offset is out of bounds");
         Self::parse_internal(&event[offset..])
     }
     fn parse_internal(event: &'a [u8]) -> Result<UEvent<'a>, &'static str> {
@@ -66,5 +67,34 @@ impl<'a> UEvent<'a> {
             subsystem: subsystem.ok_or("Event subsystem not found")?,
             dev_path: dev_path.ok_or("Event device path not found")?
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A udev monitor message with the properties at `properties_offset`.
+    fn udev_message(properties_offset: u32, properties: &[u8]) -> Vec<u8> {
+        let mut message = vec![0u8; 40];
+        message[0..8].copy_from_slice(b"libudev\0");
+        message[8..12].copy_from_slice(&0xfeedcafe_u32.to_be_bytes());
+        message[16..20].copy_from_slice(&properties_offset.to_ne_bytes());
+        message.extend_from_slice(properties);
+        message
+    }
+
+    #[test]
+    fn a_udev_message_is_parsed() {
+        let message = udev_message(40, b"ACTION=add\0SUBSYSTEM=hidraw\0DEVPATH=/devices/hidraw0\0");
+        let event = UEvent::parse(&message).expect("Failed to parse the message");
+        assert!(matches!(event.action, Action::Add));
+        assert_eq!(event.subsystem, "hidraw");
+        assert_eq!(event.dev_path, Path::new("/devices/hidraw0"));
+    }
+
+    #[test]
+    fn a_properties_offset_beyond_the_message_is_an_error() {
+        assert!(UEvent::parse(&udev_message(1000, b"")).is_err());
     }
 }
