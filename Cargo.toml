@@ -52,7 +52,7 @@ async-io = { version = "2", optional = true }
 nix = { version = "0.31.3", features = ["fs", "ioctl", "socket"] }
 
 [target."cfg(target_os = \"freebsd\")".dependencies]
-tokio = { version = "1", features = ["net"], optional = true }
+tokio = { version = "1", features = ["net", "rt"], optional = true }
 async-io = { version = "2", optional = true }
 nix = { version = "0.31.3", features = ["fs", "ioctl", "socket"] }
 
