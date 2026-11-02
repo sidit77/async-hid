@@ -217,10 +217,7 @@ impl IoBuffer<Readable> {
                 true => match self.get_result()? {
                     Some(size) => {
                         trace!("Completed read operation (retrieved {} bytes)", size);
-                        let mut data = &self.buffer[..size];
-                        if data[0] == 0x0 {
-                            data = &data[1..];
-                        }
+                        let data = without_zero_report_id(&self.buffer[..size]);
                         let mut copy_len = data.len();
                         if copy_len > buf.len() {
                             debug!(
@@ -237,6 +234,15 @@ impl IoBuffer<Readable> {
                 }
             }
         }
+    }
+}
+
+/// Strips the leading 0x00 that Windows puts in front of a report of a
+/// device without report IDs. An empty read has no such byte.
+fn without_zero_report_id(data: &[u8]) -> &[u8] {
+    match data {
+        [0x0, rest @ ..] => rest,
+        data => data
     }
 }
 
@@ -521,6 +527,18 @@ mod tests {
         let feature = Feature { pending_read: Some(0x05) };
         assert!(feature.can_take_over(0x05));
         assert!(!feature.can_take_over(0x06));
+    }
+
+    #[test]
+    fn a_leading_zero_report_id_is_stripped() {
+        assert_eq!(without_zero_report_id(&[0x00, 0x01, 0x02]), &[0x01, 0x02]);
+        assert_eq!(without_zero_report_id(&[0x05, 0x01]), &[0x05, 0x01]);
+        assert_eq!(without_zero_report_id(&[0x00]), &[] as &[u8]);
+    }
+
+    #[test]
+    fn an_empty_read_has_no_report_id_to_strip() {
+        assert_eq!(without_zero_report_id(&[]), &[] as &[u8]);
     }
 
     #[test]
