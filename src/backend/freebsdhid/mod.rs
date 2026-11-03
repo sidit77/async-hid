@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use futures_lite::stream::{iter, unfold, Boxed};
 use futures_lite::StreamExt;
-use nix::libc::EIO;
+use nix::libc::{EBUSY, EIO};
 use nix::unistd::{read, write};
 
 use crate::backend::freebsdhid::devd::{parse_line, ParsedEvent};
@@ -41,7 +41,7 @@ use crate::backend::freebsdhid::ioctl::{
 };
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
-use crate::{ensure, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::{ensure, Access, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
 
 #[derive(Default)]
 pub struct FreeBsdHidBackend;
@@ -103,7 +103,8 @@ impl Backend for FreeBsdHidBackend {
         get_device_info(path)
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        ensure!(access != Some(Access::Shared), HidError::Unsupported);
         let DeviceId::DevPath(path) = id;
 
         let fd: OwnedFd = OpenOptions::new()
@@ -112,10 +113,7 @@ impl Backend for FreeBsdHidBackend {
             .write(write)
             .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
             .open(path)
-            .map_err(|err| match err {
-                err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
-                err => err.into(),
-            })?
+            .map_err(open_error)?
             .into();
 
         // Sanity-check we opened an actual hidraw node.
@@ -127,9 +125,18 @@ impl Backend for FreeBsdHidBackend {
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
-        let (_, writer) = self.open(id, true, true).await?;
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
+        let (_, writer) = self.open(id, true, true, access).await?;
         writer.ok_or(HidError::message("Failed to open device for feature report"))
+    }
+}
+
+/// hidraw allows one open per node and refuses others with EBUSY.
+fn open_error(err: std::io::Error) -> HidError {
+    match err {
+        err if err.kind() == ErrorKind::NotFound => HidError::NotConnected,
+        err if err.raw_os_error() == Some(EBUSY) => HidError::Busy,
+        err => err.into()
     }
 }
 
@@ -182,7 +189,8 @@ fn get_device_info(path: &Path) -> HidResult<Vec<DeviceInfo>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_CLOEXEC)
-        .open(path)?;
+        .open(path)
+        .map_err(open_error)?;
     let fd = file.as_raw_fd();
 
     let mut info: MaybeUninit<HidrawDeviceInfo> = MaybeUninit::zeroed();

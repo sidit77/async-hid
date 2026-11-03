@@ -21,7 +21,7 @@ use crate::backend::winrt::utils::{DeviceInformationSteam, IBufferExt, WinResult
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle, DeviceEvent, DeviceInfo, HidError};
+use crate::{ensure, Access, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceInfo, HidError};
 
 const DEVICE_SELECTOR: &HSTRING = h!(
     r#"System.Devices.InterfaceClassGuid:="{4D1E55B2-F16F-11CF-88CB-001111000030}" AND System.Devices.InterfaceEnabled:=System.StructuredQueryType.Boolean#True"#
@@ -85,7 +85,8 @@ impl Backend for WinRtBackend {
         Ok(get_device_information(info).await?.into_iter().collect())
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        ensure!(access != Some(Access::Exclusive), HidError::Unsupported);
         let mode = access_mode(read, write).expect("Not supported");
         let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, mode)?
@@ -101,7 +102,8 @@ impl Backend for WinRtBackend {
         Ok((input, write.then_some(device)))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
+        ensure!(access != Some(Access::Exclusive), HidError::Unsupported);
         let DeviceId::UncPath(id) = id;
         let device = HidDevice::FromIdAsync(id, FileAccessMode::ReadWrite)?
             .await

@@ -5,11 +5,11 @@ use windows::Win32::Devices::HumanInterfaceDevice::{
     HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetManufacturerString, HidD_GetPreparsedData, HidD_GetProductString, HidD_GetSerialNumberString, HidP_GetCaps,
     HIDD_ATTRIBUTES, HIDP_CAPS, HIDP_STATUS_SUCCESS, PHIDP_PREPARSED_DATA
 };
-use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_SHARING_VIOLATION, HANDLE};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, FILE_SHARE_NONE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING};
 
 use crate::backend::win32::check_error;
-use crate::{ensure, HidError, HidResult};
+use crate::{ensure, Access, HidError, HidResult};
 
 #[derive(Debug, Eq, PartialEq)]
 #[repr(transparent)]
@@ -19,7 +19,7 @@ unsafe impl Send for Device {}
 unsafe impl Sync for Device {}
 
 impl Device {
-    pub fn open(path: PCWSTR, read: bool, write: bool) -> HidResult<Device> {
+    pub fn open(path: PCWSTR, read: bool, write: bool, access: Option<Access>) -> HidResult<Device> {
         let handle = unsafe {
             CreateFileW(
                 path,
@@ -30,7 +30,10 @@ impl Device {
                     (false, false) => FILE_SHARE_NONE
                 }
                 .0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                match access {
+                    None | Some(Access::Shared) => FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    Some(Access::Exclusive) => FILE_SHARE_NONE
+                },
                 None,
                 OPEN_EXISTING,
                 FILE_FLAG_OVERLAPPED,
@@ -39,6 +42,7 @@ impl Device {
         };
         handle.map(Device).map_err(|e| match e {
             e if e.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0) => HidError::NotConnected,
+            e if e.code() == HRESULT::from_win32(ERROR_SHARING_VIOLATION.0) => HidError::Busy,
             e => e.into()
         })
     }
