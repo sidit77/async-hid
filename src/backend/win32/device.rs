@@ -75,9 +75,10 @@ impl Device {
         self.read_string(HidD_GetSerialNumberString)
     }
 
+    /// The product string, or an empty string if the device does not
+    /// provide one, as on the other backends. Never returns an error.
     pub fn name(&self) -> HidResult<String> {
-        self.read_string(HidD_GetProductString)
-            .ok_or_else(|| windows::core::Error::from_thread().into())
+        Ok(self.read_string(HidD_GetProductString).unwrap_or_default())
     }
 
     pub fn manufacturer(&self) -> Option<String> {
