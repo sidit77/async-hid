@@ -12,12 +12,17 @@ pub type HidResult<T> = Result<T, HidError>;
 /// All mappings from platform specific errors to platform independent error
 /// such as `Disconnected` or `NotConnected` are performed on a best effort basis,
 /// as it is generally poorly documented by platform apis which operations can throw which errors and in what circumstances
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum HidError {
     /// This error occurs when trying to perform an action on a device which was diconnected after being opened
     Disconnected,
     /// This error occurs when trying to open a device which is no longer connected
     NotConnected,
+    /// The device is held by another handle, see [Access::Exclusive](crate::Access::Exclusive)
+    Busy,
+    /// The backend does not support the request, for example an [Access](crate::Access) mode
+    Unsupported,
     Message(Cow<'static, str>),
     Other(Box<dyn std::error::Error + Send + Sync>)
 }
@@ -41,7 +46,9 @@ impl Display for HidError {
             HidError::Message(msg) => f.write_str(msg),
             HidError::Other(err) => Display::fmt(err, f),
             HidError::Disconnected => f.write_str("The device was disconnected"),
-            HidError::NotConnected => f.write_str("The device is not connected")
+            HidError::NotConnected => f.write_str("The device is not connected"),
+            HidError::Busy => f.write_str("The device is busy"),
+            HidError::Unsupported => f.write_str("The operation is not supported by this backend")
         }
     }
 }

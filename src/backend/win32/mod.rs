@@ -24,7 +24,7 @@ use crate::backend::{Backend, DeviceInfoStream};
 use crate::device_info::DeviceId;
 use crate::error::HidResult;
 use crate::traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
-use crate::{ensure, DeviceEvent, DeviceInfo, HidError};
+use crate::{ensure, Access, DeviceEvent, DeviceInfo, HidError};
 
 #[derive(Default)]
 pub struct Win32Backend;
@@ -52,11 +52,11 @@ impl Backend for Win32Backend {
         Ok(vec![get_device_information(id.clone())?])
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
         let id = match id {
             DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
         };
-        let device = Arc::new(Device::open(id, read, write)?);
+        let device = Arc::new(Device::open(id, read, write, access)?);
 
         if read {
             check_error(unsafe { HidD_SetNumInputBuffers(device.handle(), 64) })?;
@@ -75,12 +75,14 @@ impl Backend for Win32Backend {
         Ok((read_buffer, write_buffer))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
         let id = match id {
             DeviceId::UncPath(p) => PCWSTR::from_raw(p.as_ptr())
         };
 
-        let device = Arc::new(Device::open(id, false, false)?);
+        // Feature reports need no access, but the share mode of an exclusive handle only counts with it.
+        let exclusive = access == Some(Access::Exclusive);
+        let device = Arc::new(Device::open(id, exclusive, exclusive, access)?);
         let caps = device.preparsed_data()?.caps()?;
 
         ensure!(
@@ -94,7 +96,7 @@ impl Backend for Win32Backend {
 }
 
 fn get_device_information(id: HSTRING) -> HidResult<DeviceInfo> {
-    let device = Device::open(PCWSTR(id.as_ptr()), false, false)?;
+    let device = Device::open(PCWSTR(id.as_ptr()), false, false, None)?;
     let name = device.name()?;
     let manufacturer = device.manufacturer();
     let attribs = device.attributes()?;

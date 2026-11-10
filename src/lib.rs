@@ -4,6 +4,7 @@ mod backend;
 mod device;
 mod device_info;
 mod error;
+mod open_options;
 mod traits;
 mod utils;
 
@@ -11,6 +12,7 @@ mod utils;
 pub use backend::BackendType;
 pub use device::{DeviceFeatureHandle, DeviceReader, DeviceReaderWriter, DeviceWriter};
 pub use device_info::{Device, DeviceEvent, DeviceId, DeviceInfo, HidBackend};
+pub use open_options::{Access, OpenOptions};
 use static_assertions::assert_impl_all;
 pub use traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
 
