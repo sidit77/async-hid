@@ -293,9 +293,13 @@ impl AsyncHidWrite for HidDevice {
     }
 }
 
+const MAX_FEATURE_REPORT_LEN: usize = nix::sys::ioctl::SIZEMASK as usize;
+
 impl AsyncHidFeatureHandle for HidDevice {
     async fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
         ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+        let len = buf.len().min(MAX_FEATURE_REPORT_LEN);
+        let buf = &mut buf[..len];
 
         let result = write_with(&self.0, |fd| {
             unsafe { hidraw_ioc_get_feature(fd.as_raw_fd(), buf) }.map_err(std::io::Error::from)
@@ -308,6 +312,10 @@ impl AsyncHidFeatureHandle for HidDevice {
 
     async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
         ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+        ensure!(
+            buf.len() <= MAX_FEATURE_REPORT_LEN,
+            HidError::message("Buffer is too large for a feature report")
+        );
 
         let mut data = buf.to_vec();
         write_with(&self.0, |fd| {

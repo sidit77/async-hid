@@ -71,18 +71,9 @@ impl Backend for FreeBsdHidBackend {
     }
 
     fn watch(&self) -> HidResult<Boxed<DeviceEvent>> {
-        const DEVD_SOCKET: &str = "/var/run/devd.pipe";
-
-        let stream = UnixStream::connect(DEVD_SOCKET)
-            .map_err(|e| HidError::message(format!("connect {}: {}", DEVD_SOCKET, e)))?;
-        stream.set_nonblocking(true)?;
-        // Go through the runtime-agnostic `async_api` wrapper so both the
-        // `async-io` and `tokio` features build.
-        let socket: OwnedFd = stream.into();
-
         // State: (async socket, tail bytes not yet forming a full line, read buffer).
-        let state = (AsyncFd::new(socket)?, String::new(), vec![0u8; 4096]);
-        Ok(unfold(state, |(sock, mut tail, mut buf)| async move {
+        let state = (connect_devd()?, String::new(), vec![0u8; 4096]);
+        Ok(unfold(state, |(mut sock, mut tail, mut buf)| async move {
             loop {
                 // Drain any lines already buffered in `tail` before touching the socket.
                 if let Some((event, remainder)) = extract_next(&tail) {
@@ -93,18 +84,15 @@ impl Backend for FreeBsdHidBackend {
                     continue;
                 }
 
-                let n = match read_with(&sock, |fd| read(fd, &mut buf).map_err(std::io::Error::from)).await {
-                    Ok(0) => {
-                        log::debug!("devd closed the socket");
-                        return None;
+                match read_with(&sock, |fd| read(fd, &mut buf).map_err(std::io::Error::from)).await {
+                    Ok(n) if n > 0 => tail.push_str(&String::from_utf8_lossy(&buf[..n])),
+                    // devd closes the socket on restart or when the client falls behind.
+                    result => {
+                        log::warn!("devd connection lost ({:?}), reconnecting", result);
+                        tail.clear();
+                        sock = reconnect_devd().await;
                     }
-                    Ok(n) => n,
-                    Err(err) => {
-                        log::warn!("devd read failed: {}", err);
-                        return None;
-                    }
-                };
-                tail.push_str(&String::from_utf8_lossy(&buf[..n]));
+                }
             }
         })
         .boxed())
@@ -119,7 +107,8 @@ impl Backend for FreeBsdHidBackend {
         let DeviceId::DevPath(path) = id;
 
         let fd: OwnedFd = OpenOptions::new()
-            .read(read)
+            // tokio needs a readable node; hidraw(4) starts input on every open anyway.
+            .read(read || cfg!(feature = "tokio"))
             .write(write)
             .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NONBLOCK)
             .open(path)
@@ -156,6 +145,27 @@ fn extract_next(tail: &str) -> Option<(Option<DeviceEvent>, String)> {
         ParsedEvent::Detach(p) => DeviceEvent::Disconnected(DeviceId::DevPath(p)),
     });
     Some((event, remainder))
+}
+
+const DEVD_SOCKET: &str = "/var/run/devd.pipe";
+
+fn connect_devd() -> HidResult<AsyncFd> {
+    let stream = UnixStream::connect(DEVD_SOCKET)
+        .map_err(|e| HidError::message(format!("connect {}: {}", DEVD_SOCKET, e)))?;
+    stream.set_nonblocking(true)?;
+    // Go through the runtime-agnostic `async_api` wrapper so both the
+    // `async-io` and `tokio` features build.
+    Ok(AsyncFd::new(OwnedFd::from(stream))?)
+}
+
+async fn reconnect_devd() -> AsyncFd {
+    loop {
+        async_api::sleep(std::time::Duration::from_secs(1)).await;
+        match connect_devd() {
+            Ok(sock) => return sock,
+            Err(err) => log::debug!("devd reconnect failed: {}", err)
+        }
+    }
 }
 
 fn is_hidraw_node(path: &Path) -> bool {
@@ -257,9 +267,13 @@ impl AsyncHidWrite for HidDevice {
     }
 }
 
+const MAX_FEATURE_REPORT_LEN: usize = nix::sys::ioctl::IOCPARM_MASK as usize;
+
 impl AsyncHidFeatureHandle for HidDevice {
     async fn read_feature_report<'a>(&'a mut self, buf: &'a mut [u8]) -> HidResult<usize> {
         ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+        let len = buf.len().min(MAX_FEATURE_REPORT_LEN);
+        let buf = &mut buf[..len];
 
         let result = write_with(&self.0, |fd| {
             unsafe { hidraw_get_feature(fd.as_raw_fd(), buf) }.map_err(std::io::Error::from)
@@ -267,11 +281,16 @@ impl AsyncHidFeatureHandle for HidDevice {
         .await
         .map_err(|e| HidError::message(format!("ioctl(GFEATURE) error: {}", e)))?;
 
-        Ok(result as usize)
+        // Before 14.3 success returns 0; usbhid then filled the whole buffer.
+        Ok(if result == 0 { buf.len() } else { result as usize })
     }
 
     async fn write_feature_report<'a>(&'a mut self, buf: &'a [u8]) -> HidResult<()> {
         ensure!(!buf.is_empty(), HidError::message("Buffer cannot be empty"));
+        ensure!(
+            buf.len() <= MAX_FEATURE_REPORT_LEN,
+            HidError::message("Buffer is too large for a feature report")
+        );
 
         let data = buf.to_vec();
         write_with(&self.0, |fd| {
@@ -294,6 +313,10 @@ mod async_api {
     use async_io::Async;
 
     pub type AsyncFd = Async<OwnedFd>;
+
+    pub async fn sleep(duration: std::time::Duration) {
+        async_io::Timer::after(duration).await;
+    }
 
     pub async fn read_with<R>(inner: &AsyncFd, op: impl FnMut(&OwnedFd) -> std::io::Result<R>) -> std::io::Result<R> {
         inner.read_with(op).await
@@ -321,6 +344,11 @@ mod async_api {
     use std::os::fd::OwnedFd;
 
     use tokio::io::Interest;
+
+    // Unlike tokio::time::sleep, this works on a runtime without a time driver.
+    pub async fn sleep(duration: std::time::Duration) {
+        let _ = tokio::task::spawn_blocking(move || std::thread::sleep(duration)).await;
+    }
 
     pub struct AsyncFd(tokio::io::unix::AsyncFd<OwnedFd>);
 
