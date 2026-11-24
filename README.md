@@ -71,6 +71,22 @@ FreeBSD additionally requires the `hidraw` kernel module (`hidraw_load="YES"` in
 `hw.usb.usbhid.enable=1`, and read access to `/dev/hidraw*` (`0600 root:operator` by default, so add a
 `devfs.rules(5)` entry or join the `operator` group).
 
+## Shared and Exclusive Access
+`Device::open_options()` returns an `OpenOptions` builder that requests an `Access` mode; the other open
+methods use the platform default. An open either provides the requested mode or fails with
+`HidError::Unsupported` or `HidError::Busy`.
+
+| Backend         | Default     | `Access::Shared` | `Access::Exclusive`                    |
+|-----------------|-------------|------------------|----------------------------------------|
+| macOS           | shared      | supported        | seize (`kIOHIDOptionsTypeSeizeDevice`) |
+| Windows (Win32) | shared      | supported        | share mode `0`                         |
+| Windows (WinRT) | unspecified | as the default   | `Unsupported`                          |
+| Linux           | shared      | supported        | `Unsupported`                          |
+| FreeBSD         | exclusive   | `Unsupported`    | supported                              |
+
+What `Exclusive` covers per backend is described at `Access`. The macOS and Win32 behaviour was checked
+with a Yepkit YKUSH3.
+
 ## Planned Features
 - Redesign how feature reads and write are integrated exposed.
   - Allow feature reads for read-only devices?

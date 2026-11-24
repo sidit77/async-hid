@@ -13,7 +13,7 @@ fn a_missing_product_string_is_an_empty_name() {
     let path = std::env::temp_dir().join(format!("async-hid-no-product-string-{}", std::process::id()));
     File::create(&path).expect("Failed to create the test file");
     let wide = HSTRING::from(path.as_path());
-    let device = Device::open(PCWSTR(wide.as_ptr()), false, false).expect("Failed to open the test file");
+    let device = Device::open(PCWSTR(wide.as_ptr()), false, false, None).expect("Failed to open the test file");
 
     let name = device.name();
 

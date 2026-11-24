@@ -448,7 +448,7 @@ mod tests {
     fn file_device(path: &PathBuf) -> Arc<Device> {
         File::create(path).expect("Failed to create the test file");
         let path = HSTRING::from(path.as_path());
-        Arc::new(Device::open(PCWSTR(path.as_ptr()), true, true).expect("Failed to open the test file"))
+        Arc::new(Device::open(PCWSTR(path.as_ptr()), true, true, None).expect("Failed to open the test file"))
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
         let name = HSTRING::from(format!(r"\\.\pipe\async-hid-pending-read-{}", std::process::id()));
         let server = unsafe { CreateNamedPipeW(&name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED, PIPE_TYPE_BYTE, 1, 64, 64, 0, None) };
         assert!(!server.is_invalid(), "Failed to create the pipe");
-        let device = Arc::new(Device::open(PCWSTR(name.as_ptr()), true, true).expect("Failed to open the pipe"));
+        let device = Arc::new(Device::open(PCWSTR(name.as_ptr()), true, true, None).expect("Failed to open the pipe"));
         let mut buffer = IoBuffer::<Readable>::new(device, 16).expect("Failed to create the buffer");
 
         let mut report = [0u8; 16];
@@ -499,7 +499,7 @@ mod tests {
         let name = HSTRING::from(format!(r"\\.\pipe\async-hid-completed-read-{}", std::process::id()));
         let server = unsafe { CreateNamedPipeW(&name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE, 1, 64, 64, 0, None) };
         assert!(!server.is_invalid(), "Failed to create the pipe");
-        let device = Arc::new(Device::open(PCWSTR(name.as_ptr()), true, true).expect("Failed to open the pipe"));
+        let device = Arc::new(Device::open(PCWSTR(name.as_ptr()), true, true, None).expect("Failed to open the pipe"));
         let mut buffer = IoBuffer::<Readable>::new(device, 16).expect("Failed to create the buffer");
 
         let mut report = [0u8; 16];

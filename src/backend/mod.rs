@@ -6,7 +6,7 @@ use futures_lite::stream::Boxed;
 
 use crate::device_info::DeviceId;
 use crate::traits::{AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite};
-use crate::{DeviceEvent, DeviceInfo, HidResult};
+use crate::{Access, DeviceEvent, DeviceInfo, HidResult};
 
 pub type DeviceInfoStream = Boxed<HidResult<DeviceInfo>>;
 pub trait Backend: Sized + Default {
@@ -20,11 +20,13 @@ pub trait Backend: Sized + Default {
     fn query_info(&self, id: &DeviceId) -> impl Future<Output = HidResult<Vec<DeviceInfo>>> + Send;
 
     #[allow(clippy::type_complexity)]
-    fn open(&self, id: &DeviceId, read: bool, write: bool) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
-    fn open_feature_handle(&self, id: &DeviceId) -> impl Future<Output = HidResult<Self::FeatureHandle>> + Send;
+    fn open(
+        &self, id: &DeviceId, read: bool, write: bool, access: Option<Access>
+    ) -> impl Future<Output = HidResult<(Option<Self::Reader>, Option<Self::Writer>)>> + Send;
+    fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> impl Future<Output = HidResult<Self::FeatureHandle>> + Send;
 
     async fn read_feature_report(&self, id: &DeviceId, buf: &mut [u8]) -> HidResult<usize> {
-        let mut feature_buffer = self.open_feature_handle(id).await?;
+        let mut feature_buffer = self.open_feature_handle(id, None).await?;
         feature_buffer.read_feature_report(buf).await
     }
 }
@@ -161,20 +163,20 @@ macro_rules! dyn_backend_impl {
                 }
             }
 
-            async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+            async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
                 match self {
                     $(
                         $(#[$module_attrs])*$(#[$item_attrs])*
-                        Self::$name(i) => i.open(id, read, write).await.map(|(r, w)| (r.map(DynReader::$name), w.map(DynWriter::$name))),
+                        Self::$name(i) => i.open(id, read, write, access).await.map(|(r, w)| (r.map(DynReader::$name), w.map(DynWriter::$name))),
                     )+
                 }
             }
 
-            async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
+            async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
                 match self {
                     $(
                         $(#[$module_attrs])*$(#[$item_attrs])*
-                        Self::$name(i) => i.open_feature_handle(id).await.map(DynFeatureHandle::$name),
+                        Self::$name(i) => i.open_feature_handle(id, access).await.map(DynFeatureHandle::$name),
                     )+
                 }
             }

@@ -8,7 +8,7 @@ use static_assertions::assert_impl_all;
 
 use crate::backend::{Backend, BackendType, DynBackend};
 use crate::device::DeviceFeatureHandle;
-use crate::{DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult};
+use crate::{Access, DeviceReader, DeviceReaderWriter, DeviceWriter, HidResult, OpenOptions};
 
 /// A platform-specific identifier for a device.
 ///
@@ -159,26 +159,47 @@ impl Device {
 
     /// Open the device in read-only mode
     pub async fn open_readable(&self) -> HidResult<DeviceReader> {
-        let (r, _) = self.backend.open(&self.id, true, false).await?;
-        Ok(DeviceReader(r.unwrap()))
+        self.open_readable_with(None).await
     }
 
     /// Open the device in write-only mode
     /// Note: Not all backends support this mode and might upgrade the permission to read+write behind the scenes
     pub async fn open_writeable(&self) -> HidResult<DeviceWriter> {
-        let (_, w) = self.backend.open(&self.id, false, true).await?;
-        Ok(DeviceWriter(w.unwrap()))
+        self.open_writeable_with(None).await
     }
 
     /// Open the device in read and write mode
     pub async fn open(&self) -> HidResult<DeviceReaderWriter> {
-        let (r, w) = self.backend.open(&self.id, true, true).await?;
-        Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
+        self.open_with(None).await
     }
 
     /// Open the device in read and write mode
     pub async fn open_feature_handle(&self) -> HidResult<DeviceFeatureHandle> {
-        let r = self.backend.open_feature_handle(&self.id).await?;
+        self.open_feature_handle_with(None).await
+    }
+
+    /// Configure how the device is opened, for example with an explicit [Access](crate::Access) mode
+    pub fn open_options(&self) -> OpenOptions<'_> {
+        OpenOptions::new(self)
+    }
+
+    pub(crate) async fn open_readable_with(&self, access: Option<Access>) -> HidResult<DeviceReader> {
+        let (r, _) = self.backend.open(&self.id, true, false, access).await?;
+        Ok(DeviceReader(r.unwrap()))
+    }
+
+    pub(crate) async fn open_writeable_with(&self, access: Option<Access>) -> HidResult<DeviceWriter> {
+        let (_, w) = self.backend.open(&self.id, false, true, access).await?;
+        Ok(DeviceWriter(w.unwrap()))
+    }
+
+    pub(crate) async fn open_with(&self, access: Option<Access>) -> HidResult<DeviceReaderWriter> {
+        let (r, w) = self.backend.open(&self.id, true, true, access).await?;
+        Ok((DeviceReader(r.unwrap()), DeviceWriter(w.unwrap())))
+    }
+
+    pub(crate) async fn open_feature_handle_with(&self, access: Option<Access>) -> HidResult<DeviceFeatureHandle> {
+        let r = self.backend.open_feature_handle(&self.id, access).await?;
         Ok(DeviceFeatureHandle(r))
     }
 

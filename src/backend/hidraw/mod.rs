@@ -25,7 +25,7 @@ use crate::backend::hidraw::ioctl::{hidraw_ioc_get_feature, hidraw_ioc_set_featu
 use crate::backend::hidraw::uevent::{Action, UEvent};
 use crate::backend::{Backend, DeviceInfoStream};
 use crate::utils::TryIterExt;
-use crate::{ensure, AsyncHidRead, AsyncHidWrite, AsyncHidFeatureHandle, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
+use crate::{ensure, Access, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, DeviceEvent, DeviceId, DeviceInfo, HidError, HidResult};
 
 #[derive(Default)]
 pub struct HidRawBackend;
@@ -114,7 +114,8 @@ impl Backend for HidRawBackend {
         get_device_info_raw(id.clone())
     }
 
-    async fn open(&self, id: &DeviceId, read: bool, write: bool) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+    async fn open(&self, id: &DeviceId, read: bool, write: bool, access: Option<Access>) -> HidResult<(Option<Self::Reader>, Option<Self::Writer>)> {
+        ensure!(access != Some(Access::Exclusive), HidError::Unsupported);
         let DeviceId::DevPath(id) = id;
 
         let properties = read_to_string(id.join("uevent")).map_err(|err| match err {
@@ -145,8 +146,8 @@ impl Backend for HidRawBackend {
         Ok((read.then(|| device.clone()), write.then(|| device.clone())))
     }
 
-    async fn open_feature_handle(&self, id: &DeviceId) -> HidResult<Self::FeatureHandle> {
-        let (_, writer) = self.open(id, true, true).await?;
+    async fn open_feature_handle(&self, id: &DeviceId, access: Option<Access>) -> HidResult<Self::FeatureHandle> {
+        let (_, writer) = self.open(id, true, true, access).await?;
         let device = writer.ok_or(HidError::message("Failed to open device for feature report"))?;
         Ok(device)
     }

@@ -14,13 +14,36 @@ use crossbeam_queue::ArrayQueue;
 use dispatch2::{DispatchQoS, DispatchQueue, DispatchQueueAttr, DispatchRetained, GlobalQueueIdentifier};
 use log::trace;
 use objc2_core_foundation::{CFIndex, CFNumber, CFRetained};
-use objc2_io_kit::{kIOHIDMaxInputReportSizeKey, kIOReturnBadArgument, kIOReturnSuccess, IOHIDDevice, IOHIDReportType, IOOptionBits, IOReturn};
+use objc2_io_kit::{
+    kIOHIDMaxInputReportSizeKey, kIOHIDOptionsTypeSeizeDevice, kIOReturnBadArgument, kIOReturnExclusiveAccess, kIOReturnSuccess, IOHIDDevice,
+    IOHIDReportType, IOOptionBits, IOReturn
+};
 
 use crate::backend::iohidmanager::device_info::property_key;
-use crate::{ensure, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
+use crate::{ensure, Access, AsyncHidFeatureHandle, AsyncHidRead, AsyncHidWrite, HidError, HidResult};
+
+/// The `IOHIDDeviceOpen` options for the requested access.
+pub fn open_options(access: Option<Access>) -> IOOptionBits {
+    match access {
+        None | Some(Access::Shared) => 0,
+        Some(Access::Exclusive) => kIOHIDOptionsTypeSeizeDevice
+    }
+}
+
+/// `kIOReturnExclusiveAccess` means that another client seized the device.
+pub fn open_error(ret: IOReturn) -> HidError {
+    const EXCLUSIVE_ACCESS: IOReturn = objc2_io_kit::kIOReturnExclusiveAccess as IOReturn;
+
+    match ret {
+        EXCLUSIVE_ACCESS => HidError::Busy,
+        other => HidError::message(format!("Failed to open device: {:#X}", other))
+    }
+}
 
 pub struct DeviceReadWriter {
     device: CFRetained<IOHIDDevice>,
+    /// Closing passes the options the device was opened with.
+    options: IOOptionBits,
     read_state: Option<ReaderState>,
     writable: bool,
     /// Runs GetReport and SetReport, apart from the queue that delivers input reports.
@@ -97,6 +120,8 @@ fn check(ret: IOReturn) -> HidResult<()> {
         kIOReturnSuccess => Ok(()),
         // IOKit answers a removed device with a bad argument.
         other if other == kIOReturnBadArgument as IOReturn => Err(HidError::Disconnected),
+        // Another client seized the device.
+        other if other == kIOReturnExclusiveAccess as IOReturn => Err(HidError::Busy),
         other => Err(HidError::message(format!("report transaction failed: {:#X}", other)))
     }
 }
@@ -159,14 +184,10 @@ where
 }
 
 impl DeviceReadWriter {
-    pub const DEVICE_OPTIONS: IOOptionBits = 0;
-
-    pub fn new(device: CFRetained<IOHIDDevice>, dispatch_queue: &DispatchQueue, read: bool, write: bool) -> HidResult<Self> {
+    pub fn new(device: CFRetained<IOHIDDevice>, dispatch_queue: &DispatchQueue, read: bool, write: bool, options: IOOptionBits) -> HidResult<Self> {
         if read || write {
-            ensure!(
-                device.open(DeviceReadWriter::DEVICE_OPTIONS) == kIOReturnSuccess,
-                HidError::message("Failed to open device")
-            );
+            let ret = device.open(options);
+            ensure!(ret == kIOReturnSuccess, open_error(ret));
         }
 
         let max_input_report_len = match read {
@@ -178,7 +199,7 @@ impl DeviceReadWriter {
                 match len {
                     Some(len) => Some(len as usize),
                     None => {
-                        device.close(Self::DEVICE_OPTIONS);
+                        device.close(options);
                         return Err(HidError::message("Failed to read input report size"));
                     }
                 }
@@ -222,6 +243,7 @@ impl DeviceReadWriter {
 
         Ok(Self {
             device,
+            options,
             read_state,
             writable: write,
             report_queue
@@ -379,7 +401,7 @@ impl Drop for DeviceReadWriter {
                 drop(Box::<AsyncReportReaderInner>::from_raw(state.inner as *mut _));
             }
 
-            self.device.close(Self::DEVICE_OPTIONS);
+            self.device.close(self.options);
         }
     }
 }
